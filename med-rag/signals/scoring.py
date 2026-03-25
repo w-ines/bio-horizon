@@ -1,1 +1,0 @@
-# Calcul score d'émergence

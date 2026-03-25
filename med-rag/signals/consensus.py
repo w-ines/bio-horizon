@@ -1,1 +1,0 @@
-# Score de consensus (positif/négatif/hypothétique)
