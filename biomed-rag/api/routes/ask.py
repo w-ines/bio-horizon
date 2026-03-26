@@ -38,17 +38,24 @@ def _build_deep_agent_stream(query: str, conversation_id: str = None):
 
         def run_agent():
             nonlocal final_answer
-            from deepagents.agents.main_agent import create_biomedical_agent
+            try:
+                from deepagents.agents.main_agent import create_biomedical_agent
 
-            agent = create_biomedical_agent()
-            if hasattr(agent, 'stream_callback'):
-                agent.stream_callback = stream_callback
-            if conversation_id and hasattr(agent, 'conversation_id'):
-                agent.conversation_id = conversation_id
+                agent = create_biomedical_agent(
+                    conversation_id=conversation_id,
+                    stream_callback=stream_callback,
+                )
 
-            result = agent.invoke({"input": query})
-            final_answer = result.get("output", str(result)) if isinstance(result, dict) else str(result)
-            event_queue.put({"type": "done"})
+                result = agent.invoke({"input": query})
+                final_answer = result.get("output", str(result)) if isinstance(result, dict) else str(result)
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                print(f"[ask] Agent error: {e}\n{tb}")
+                event_queue.put({"type": "error", "content": f"Agent error: {e}"})
+                final_answer = f"An error occurred while processing your request: {e}"
+            finally:
+                event_queue.put({"type": "done"})
 
         agent_thread = threading.Thread(target=run_agent)
         agent_thread.start()

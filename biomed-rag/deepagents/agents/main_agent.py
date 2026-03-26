@@ -3,11 +3,19 @@ Main bio-horizon Deep Agent - Biomedical Intelligence Agent.
 Replaces smolagents CodeAgent with LangChain Deep Agents.
 """
 
+import json as _json
+import logging
 import os
+import re
 from typing import List, Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
+
+# In-memory cache — fast access during a session
+_memory_cache: dict = {}
 
 
 def create_biomedical_agent(
@@ -15,6 +23,8 @@ def create_biomedical_agent(
     model_name: Optional[str] = None,
     temperature: float = 0.3,
     max_steps: int = 5,
+    conversation_id: Optional[str] = None,
+    stream_callback=None,
 ):
     """
     Create the main bio-horizon Deep Agent with biomedical tools.
@@ -26,7 +36,7 @@ def create_biomedical_agent(
         max_steps: Maximum agent steps (default: 5)
         
     Returns:
-        AgentExecutor (LangChain agent)
+        SimpleAgentExecutor with conversation memory
     """
     from langchain_openai import ChatOpenAI
     from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
@@ -72,15 +82,11 @@ def create_biomedical_agent(
             self.tools = {tool.name: tool for tool in tools}
             self.max_iterations = max_iterations
             self.conversation_id = conversation_id or "default"
-            self.stream_callback = stream_callback  # Callback pour streamer les étapes
+            self.stream_callback = stream_callback
             
-            # Conversation memory (in-memory for now)
-            # TODO: Migrate to Supabase for persistence
-            if not hasattr(SimpleAgentExecutor, '_conversations'):
-                SimpleAgentExecutor._conversations = {}
-            
-            if self.conversation_id not in SimpleAgentExecutor._conversations:
-                SimpleAgentExecutor._conversations[self.conversation_id] = []
+            # Load history from Supabase into cache on first access
+            if self.conversation_id not in _memory_cache:
+                self._hydrate_from_persistence()
             
             self.system_prompt = """You are Bio-Horizon, an intelligent biomedical research assistant.
 You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately to find the answer. NEVER ask the user to reformulate or search themselves.
@@ -89,20 +95,74 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
 1. **pubmed_search(query, max_results, sort_by)** — Search PubMed for recent biomedical literature. Use this for any question about treatments, drugs, diseases, clinical trials, or emerging research.
 2. **retrieve_knowledge(query, top_k, enable_kg)** — Search the local knowledge base of uploaded documents and the Knowledge Graph.
 
-## Workflow for biomedical queries
-1. Identify key medical entities in the question (diseases, drugs, genes…).
-2. **Always call pubmed_search** with a well-crafted English query to get the latest literature. Use sort_by="date" for emerging/recent topics.
-3. **Also call retrieve_knowledge** to check the local document base and Knowledge Graph.
-4. Synthesize ALL results into a clear, evidence-based answer with citations.
-5. If the user asks about emerging signals or trends, highlight novelty, recency, and frequency of findings.
+## Workflow (follow this order strictly)
+1. **Check conversation history**: Read ALL previous messages. If the user's question (or a very similar one) was already answered, reuse that answer directly. Do NOT call any tool.
+2. **Follow-up on existing results**: If the user asks about details, comparisons, or sub-questions about results already in the conversation, answer from context. Only call a tool if you need specific NEW data not present in the history.
+3. **New topic only**: If the question is about something NOT covered in the conversation history, THEN call pubmed_search (with a well-crafted English query, sort_by="date" for recent topics) AND retrieve_knowledge.
+4. Synthesize results into a clear, evidence-based answer with citations.
 
 ## Rules
-- ALWAYS use tools before answering. Never say "I couldn't find information" without having called at least pubmed_search AND retrieve_knowledge.
+- Never repeat a tool call if the answer is already in the conversation.
+- Never say "I couldn't find information" without having attempted at least one tool call on a NEW topic.
 - Cite sources with [Source N] or [PMID: ...] format.
 - Answer in the same language as the user's question.
 - Be precise: medical information requires accuracy.
-- If a tool returns no results, try rephrasing the query yourself and retry once before giving up."""
+- If a tool returns no results, rephrase the query and retry once."""
         
+        @staticmethod
+        def _parse_text_tool_calls(content: str) -> list:
+            """
+            Fallback parser: detect text-based function calls in LLM output.
+            Handles patterns like: <function=tool_name>{"arg": "val"}
+            Returns list of dicts compatible with tool_call format.
+            """
+            if not content:
+                return []
+            pattern = r'<function=([^>]+)>(\{.*?\})'
+            matches = re.findall(pattern, content, re.DOTALL)
+            calls = []
+            for name, args_str in matches:
+                try:
+                    args = _json.loads(args_str)
+                    calls.append({
+                        "name": name.strip(),
+                        "args": args,
+                        "id": f"text_call_{len(calls)}",
+                    })
+                except _json.JSONDecodeError:
+                    continue
+            return calls
+
+        def _hydrate_from_persistence(self):
+            """Load conversation history from Supabase into in-memory cache."""
+            try:
+                from deepagents.memory import load_history
+                rows = load_history(conversation_id=self.conversation_id, limit=20)
+                msgs = []
+                for r in rows:
+                    if r.role == "user":
+                        msgs.append(HumanMessage(content=r.content))
+                    elif r.role == "assistant":
+                        msgs.append(AIMessage(content=r.content))
+                _memory_cache[self.conversation_id] = msgs
+                if msgs:
+                    logger.info("[memory] Loaded %d messages from persistence for %s", len(msgs), self.conversation_id)
+            except Exception as e:
+                logger.debug("[memory] Could not hydrate from persistence: %s", e)
+                _memory_cache[self.conversation_id] = []
+
+        def _persist_message(self, role: str, content: str):
+            """Dual-write: save to in-memory cache + Supabase."""
+            # In-memory
+            msg = HumanMessage(content=content) if role == "user" else AIMessage(content=content)
+            _memory_cache.setdefault(self.conversation_id, []).append(msg)
+            # Supabase (async-safe, non-blocking on failure)
+            try:
+                from deepagents.memory import save_message
+                save_message(conversation_id=self.conversation_id, role=role, content=content)
+            except Exception as e:
+                logger.debug("[memory] Supabase save skipped: %s", e)
+
         def invoke(self, input_dict):
             """Execute the agent with tool calling loop."""
             user_input = input_dict.get("input", "")
@@ -110,14 +170,10 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
             # Build messages with conversation history
             messages = [HumanMessage(content=self.system_prompt)]
             
-            # Ensure conversation_id exists in _conversations
-            if self.conversation_id not in SimpleAgentExecutor._conversations:
-                SimpleAgentExecutor._conversations[self.conversation_id] = []
-            
             # Add conversation history (last 10 messages to avoid context overflow)
-            history = SimpleAgentExecutor._conversations[self.conversation_id]
+            history = _memory_cache.get(self.conversation_id, [])
             if history:
-                messages.extend(history[-10:])  # Keep last 10 messages
+                messages.extend(history[-10:])
             
             # Add current user message
             messages.append(HumanMessage(content=user_input))
@@ -132,22 +188,32 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
                 messages.append(response)
                 
                 # Check if LLM wants to use tools
-                if not response.tool_calls:
+                tool_calls = response.tool_calls or []
+                
+                # Fallback: parse text-based tool calls if model didn't use structured format
+                if not tool_calls and response.content:
+                    text_calls = self._parse_text_tool_calls(response.content)
+                    if text_calls:
+                        logger.info("[agent] Detected %d text-based tool call(s), converting", len(text_calls))
+                        tool_calls = text_calls
+                
+                if not tool_calls:
                     # No tool calls, return final answer
-                    if self.stream_callback:
-                        self.stream_callback({"type": "answer", "content": response.content})
+                    answer = response.content or ""
+                    if not answer.strip():
+                        logger.warning("[agent] LLM returned empty content at step %d", iteration + 1)
+                        continue  # Retry instead of returning empty
                     
-                    # Save conversation to history
-                    SimpleAgentExecutor._conversations[self.conversation_id].append(
-                        HumanMessage(content=user_input)
-                    )
-                    SimpleAgentExecutor._conversations[self.conversation_id].append(
-                        AIMessage(content=response.content)
-                    )
-                    return {"output": response.content}
+                    if self.stream_callback:
+                        self.stream_callback({"type": "answer", "content": answer})
+                    
+                    # Dual-write: in-memory + Supabase
+                    self._persist_message("user", user_input)
+                    self._persist_message("assistant", answer)
+                    return {"output": answer}
                 
                 # Execute tool calls
-                for tool_call in response.tool_calls:
+                for tool_call in tool_calls:
                     tool_name = tool_call["name"]
                     tool_args = tool_call["args"]
                     
@@ -199,17 +265,18 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
             # Max iterations reached
             final_response = "I apologize, but I reached the maximum number of steps. Please try rephrasing your question."
             
-            # Save conversation to history even if max iterations reached
-            SimpleAgentExecutor._conversations[self.conversation_id].append(
-                HumanMessage(content=user_input)
-            )
-            SimpleAgentExecutor._conversations[self.conversation_id].append(
-                AIMessage(content=final_response)
-            )
+            # Dual-write even on max iterations
+            self._persist_message("user", user_input)
+            self._persist_message("assistant", final_response)
             
             return {"output": final_response}
     
-    return SimpleAgentExecutor(llm_with_tools, tools, max_iterations=max_steps)
+    return SimpleAgentExecutor(
+        llm_with_tools, tools,
+        max_iterations=max_steps,
+        conversation_id=conversation_id,
+        stream_callback=stream_callback,
+    )
 
 
 def create_simple_rag_agent(
