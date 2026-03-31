@@ -39,7 +39,7 @@ def extract_from_text(
         entity_types: Standard entity types (DISEASE, DRUG, GENE, etc.)
         custom_labels: Custom zero-shot labels (BRAIN_REGION, BIOMARKER, etc.)
         enable_assertion: Whether to compute assertion status (F2c)
-        provider: NER backend to use (openmed, gliner)
+        provider: NER backend to use (openmed, gliner, pubtator3)
     
     Returns:
         NerResult with extracted entities
@@ -111,6 +111,30 @@ def extract_from_article(
     abstract = _safe_text(article.get("abstract"))
     pmid = _safe_text(article.get("pmid"))
 
+    p = _select_provider(provider)
+
+    # PubTator3: use PMID-based lookup (no local ML)
+    if p == "pubtator3" and pmid:
+        from ner.backends import pubtator3_backend
+
+        by_pmid = pubtator3_backend.extract_by_pmids([pmid], entity_types=entity_types)
+        out = by_pmid.get(pmid)
+        if out is None:
+            out = extract_from_text(
+                (title + "\n\n" + abstract).strip(),
+                entity_types=entity_types,
+                provider="openmed",
+            )
+        result: Dict[str, Any] = {
+            "pmid": pmid,
+            "title": title,
+            "entities": out.to_dict().get("entities", {}),
+            "provider": out.provider,
+        }
+        if out.error:
+            result["error"] = out.error
+        return result
+
     text = (title + "\n\n" + abstract).strip()
     out = extract_from_text(text, entity_types=entity_types, provider=provider)
 
@@ -131,23 +155,32 @@ def extract_batch(
     entity_types: Optional[Iterable[str]] = None,
     provider: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    texts: List[str] = []
-    for a in articles:
-        title = _safe_text(a.get("title"))
-        abstract = _safe_text(a.get("abstract"))
-        texts.append((title + "\n\n" + abstract).strip())
-
     p = _select_provider(provider)
-    if p == "openmed":
-        from ner.backends import openmed_backend
 
-        results = openmed_backend.extract_batch(texts, entity_types=entity_types)
-    elif p == "gliner":
-        from ner.backends import gliner_backend
+    # PubTator3 fast path: single HTTP call for all PMIDs
+    if p == "pubtator3":
+        from ner.backends import pubtator3_backend
 
-        results = gliner_backend.extract_batch(texts, entity_types=entity_types)
+        results = pubtator3_backend.extract_batch_from_articles(
+            articles, entity_types=entity_types
+        )
     else:
-        results = [extract_from_text(t, entity_types=entity_types, provider=p) for t in texts]
+        texts: List[str] = []
+        for a in articles:
+            title = _safe_text(a.get("title"))
+            abstract = _safe_text(a.get("abstract"))
+            texts.append((title + "\n\n" + abstract).strip())
+
+        if p == "openmed":
+            from ner.backends import openmed_backend
+
+            results = openmed_backend.extract_batch(texts, entity_types=entity_types)
+        elif p == "gliner":
+            from ner.backends import gliner_backend
+
+            results = gliner_backend.extract_batch(texts, entity_types=entity_types)
+        else:
+            results = [extract_from_text(t, entity_types=entity_types, provider=p) for t in texts]
 
     out: List[Dict[str, Any]] = []
     for idx, article in enumerate(articles):

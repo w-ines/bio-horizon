@@ -3,10 +3,8 @@ Main bio-horizon Deep Agent - Biomedical Intelligence Agent.
 Replaces smolagents CodeAgent with LangChain Deep Agents.
 """
 
-import json as _json
 import logging
 import os
-import re
 from typing import List, Optional
 from dotenv import load_dotenv
 
@@ -22,7 +20,7 @@ def create_biomedical_agent(
     tools: Optional[List] = None,
     model_name: Optional[str] = None,
     temperature: float = 0.3,
-    max_steps: int = 5,
+    max_steps: int = 7,
     conversation_id: Optional[str] = None,
     stream_callback=None,
 ):
@@ -46,6 +44,11 @@ def create_biomedical_agent(
     from deepagents.tools.knowledge.rag_tool import retrieve_knowledge
 
     from deepagents.tools.biomedical.pubmed_tool import pubmed_search
+    from deepagents.tools.biomedical.corpus_ingestion_tool import (
+        create_corpus_ingestion_job,
+        check_ingestion_job_status
+    )
+    from deepagents.tools.biomedical.search_articles_tool import search_ingested_articles
 
     # Configure LLM
     model_name = model_name or os.getenv("OPEN_AI_MODEL", "gpt-4o")
@@ -69,16 +72,18 @@ def create_biomedical_agent(
         tools = [
             pubmed_search,
             retrieve_knowledge,
-            # More tools will be added as they are migrated
+            create_corpus_ingestion_job,
+            check_ingestion_job_status,
+            search_ingested_articles,
         ]
     
-    # Bind tools to LLM
+    # bind_tools() for structured function calling (GPT-4o-mini supports this)
     llm_with_tools = llm.bind_tools(tools)
     
     # Create a simple agent executor wrapper with conversation memory
     class SimpleAgentExecutor:
-        def __init__(self, llm_with_tools, tools, max_iterations=5, conversation_id=None, stream_callback=None):
-            self.llm = llm_with_tools
+        def __init__(self, llm, tools, max_iterations=7, conversation_id=None, stream_callback=None):
+            self.llm = llm
             self.tools = {tool.name: tool for tool in tools}
             self.max_iterations = max_iterations
             self.conversation_id = conversation_id or "default"
@@ -91,47 +96,21 @@ def create_biomedical_agent(
             self.system_prompt = """You are Bio-Horizon, an intelligent biomedical research assistant.
 You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately to find the answer. NEVER ask the user to reformulate or search themselves.
 
-## Available tools
-1. **pubmed_search(query, max_results, sort_by)** — Search PubMed for recent biomedical literature. Use this for any question about treatments, drugs, diseases, clinical trials, or emerging research.
-2. **retrieve_knowledge(query, top_k, enable_kg)** — Search the local knowledge base of uploaded documents and the Knowledge Graph.
-
-## Workflow (follow this order strictly)
-1. **Check conversation history**: Read ALL previous messages. If the user's question (or a very similar one) was already answered, reuse that answer directly. Do NOT call any tool.
-2. **Follow-up on existing results**: If the user asks about details, comparisons, or sub-questions about results already in the conversation, answer from context. Only call a tool if you need specific NEW data not present in the history.
-3. **New topic only**: If the question is about something NOT covered in the conversation history, THEN call pubmed_search (with a well-crafted English query, sort_by="date" for recent topics) AND retrieve_knowledge.
-4. Synthesize results into a clear, evidence-based answer with citations.
+## Workflow
+1. **Simple question** about a biomedical topic: call pubmed_search to get recent articles, then synthesize a clear answer.
+2. **Large-scale analysis** ("analyze all literature", "ingest corpus"): call create_corpus_ingestion_job with processing_mode="full" (NER+KG via PubTator3, ~1-3 min).
+3. **Explore ingested data**: call search_ingested_articles after a job completes.
+4. **Local knowledge**: call retrieve_knowledge to search uploaded documents and Knowledge Graph.
+5. **Check job progress**: call check_ingestion_job_status with the job_id.
 
 ## Rules
-- Never repeat a tool call if the answer is already in the conversation.
-- Never say "I couldn't find information" without having attempted at least one tool call on a NEW topic.
-- Cite sources with [Source N] or [PMID: ...] format.
-- Answer in the same language as the user's question.
+- ALWAYS answer in English by default, unless the user explicitly requests another language.
+- Cite sources with [PMID: ...] format.
 - Be precise: medical information requires accuracy.
-- If a tool returns no results, rephrase the query and retry once."""
+- Never say \"I couldn't find information\" without having attempted at least one tool call.
+- If a tool returns no results, rephrase the query and retry once.
+- When formatting markdown links, use [text](url) format WITHOUT adding extra parentheses after the link."""
         
-        @staticmethod
-        def _parse_text_tool_calls(content: str) -> list:
-            """
-            Fallback parser: detect text-based function calls in LLM output.
-            Handles patterns like: <function=tool_name>{"arg": "val"}
-            Returns list of dicts compatible with tool_call format.
-            """
-            if not content:
-                return []
-            pattern = r'<function=([^>]+)>(\{.*?\})'
-            matches = re.findall(pattern, content, re.DOTALL)
-            calls = []
-            for name, args_str in matches:
-                try:
-                    args = _json.loads(args_str)
-                    calls.append({
-                        "name": name.strip(),
-                        "args": args,
-                        "id": f"text_call_{len(calls)}",
-                    })
-                except _json.JSONDecodeError:
-                    continue
-            return calls
 
         def _hydrate_from_persistence(self):
             """Load conversation history from Supabase into in-memory cache."""
@@ -164,7 +143,7 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
                 logger.debug("[memory] Supabase save skipped: %s", e)
 
         def invoke(self, input_dict):
-            """Execute the agent with tool calling loop."""
+            """Execute the agent with structured tool calling loop."""
             user_input = input_dict.get("input", "")
             
             # Build messages with conversation history
@@ -183,26 +162,22 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
                 if self.stream_callback:
                     self.stream_callback({"type": "thought", "content": f" Thinking... (step {iteration + 1}/{self.max_iterations})"})
                 
-                # Call LLM
+                # Call LLM with bound tools
                 response = self.llm.invoke(messages)
                 messages.append(response)
                 
-                # Check if LLM wants to use tools
+                # Check for structured tool calls
                 tool_calls = response.tool_calls or []
                 
-                # Fallback: parse text-based tool calls if model didn't use structured format
-                if not tool_calls and response.content:
-                    text_calls = self._parse_text_tool_calls(response.content)
-                    if text_calls:
-                        logger.info("[agent] Detected %d text-based tool call(s), converting", len(text_calls))
-                        tool_calls = text_calls
-                
                 if not tool_calls:
-                    # No tool calls, return final answer
+                    # No tool calls — this is the final answer
                     answer = response.content or ""
                     if not answer.strip():
-                        logger.warning("[agent] LLM returned empty content at step %d", iteration + 1)
-                        continue  # Retry instead of returning empty
+                        logger.warning("[agent] Empty response at step %d", iteration + 1)
+                        messages.append(HumanMessage(content="Please respond to the user's question. Use your tools if needed."))
+                        continue
+                    
+                    logger.info("[agent] Final answer at step %d (length=%d)", iteration + 1, len(answer))
                     
                     if self.stream_callback:
                         self.stream_callback({"type": "answer", "content": answer})
@@ -213,62 +188,38 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
                     return {"output": answer}
                 
                 # Execute tool calls
+                logger.info("[agent] Step %d: %d tool call(s): %s", iteration + 1, len(tool_calls), [tc['name'] for tc in tool_calls])
+                
                 for tool_call in tool_calls:
                     tool_name = tool_call["name"]
                     tool_args = tool_call["args"]
+                    tool_id = tool_call.get("id", f"call_{iteration}")
                     
-                    # Stream action
                     if self.stream_callback:
-                        args_preview = str(tool_args)[:100]
-                        self.stream_callback({"type": "action", "content": f" Using tool: {tool_name}", "args": args_preview})
+                        self.stream_callback({"type": "action", "content": f" Using tool: {tool_name}", "args": str(tool_args)[:100]})
                     
                     if tool_name in self.tools:
                         try:
-                            # Execute tool
-                            tool_result = self.tools[tool_name].invoke(tool_args)
+                            result = self.tools[tool_name].invoke(tool_args)
+                            result_str = str(result)
                             
-                            # Stream observation with detailed preview
                             if self.stream_callback:
-                                result_str = str(tool_result)
-                                # Get first 300 chars for preview
-                                result_preview = result_str[:300] + "..." if len(result_str) > 300 else result_str
-                                # Count results if it's a list/array
-                                result_count = ""
-                                if isinstance(tool_result, (list, tuple)):
-                                    result_count = f" ({len(tool_result)} items)"
-                                elif isinstance(tool_result, dict) and "documents" in tool_result:
-                                    result_count = f" ({len(tool_result.get('documents', []))} documents)"
-                                
-                                self.stream_callback({
-                                    "type": "observation", 
-                                    "content": f" Tool result received{result_count}",
-                                    "preview": result_preview
-                                })
+                                preview = result_str[:300] + "..." if len(result_str) > 300 else result_str
+                                self.stream_callback({"type": "observation", "content": f" Tool result received", "preview": preview})
                             
-                            messages.append(
-                                ToolMessage(
-                                    content=str(tool_result),
-                                    tool_call_id=tool_call["id"]
-                                )
-                            )
+                            messages.append(ToolMessage(content=result_str, tool_call_id=tool_id))
                         except Exception as e:
+                            logger.error("[agent] Tool %s error: %s", tool_name, e)
                             if self.stream_callback:
                                 self.stream_callback({"type": "error", "content": f" Tool error: {str(e)}"})
-                            
-                            messages.append(
-                                ToolMessage(
-                                    content=f"Error executing tool: {str(e)}",
-                                    tool_call_id=tool_call["id"]
-                                )
-                            )
+                            messages.append(ToolMessage(content=f"Error: {str(e)}", tool_call_id=tool_id))
+                    else:
+                        messages.append(ToolMessage(content=f"Error: Tool '{tool_name}' not found.", tool_call_id=tool_id))
             
             # Max iterations reached
             final_response = "I apologize, but I reached the maximum number of steps. Please try rephrasing your question."
-            
-            # Dual-write even on max iterations
             self._persist_message("user", user_input)
             self._persist_message("assistant", final_response)
-            
             return {"output": final_response}
     
     return SimpleAgentExecutor(

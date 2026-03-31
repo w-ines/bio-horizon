@@ -110,7 +110,10 @@ def add_ner_results_batch(
 ) -> nx.Graph:
     """Ingest a batch of NER results (from extract_medical_entities_batch)."""
     for r in ner_results:
-        source = r.get("pmid", "")
+        source = r.get("pmid") or ""
+        if not source:
+            art = r.get("article") or {}
+            source = art.get("pmid") or ""
         add_ner_result_to_graph(G, r, source=source)
     return G
 

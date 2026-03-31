@@ -2,6 +2,7 @@
 PubMed Search Tool for Medical Literature Retrieval
 
 Uses NCBI E-utilities API (ESearch + EFetch).
+For bulk ingestion, use pubmed_corpus.py instead.
 
 Environment variables (.env):
     NCBI_API_KEY        - NCBI API key (increases rate limit from 3 to 10 req/sec)
@@ -12,88 +13,31 @@ Environment variables (.env):
     PUBMED_USE_NCBI     - Toggle to use NCBI API (default: true)
 """
 
-import os
 import logging
-import hashlib
 from typing import Any, Dict, List, Optional
-from datetime import timedelta
 
 import requests
 from dotenv import load_dotenv
 
-try:
-    import redis
-    REDIS_AVAILABLE = True
-except ImportError:
-    REDIS_AVAILABLE = False
-    logger = logging.getLogger(__name__)
-    logger.warning("Redis not available. Install with: pip install redis")
+from core_tools.pubmed_utils import (
+    get_env,
+    get_ncbi_base_url,
+    add_ncbi_credentials,
+    CacheManager,
+    parse_efetch_xml,
+    fetch_articles_xml,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-# =============================================================================
-# Redis Cache Manager
-# =============================================================================
-
-class CacheManager:
-    """Redis cache manager for PubMed queries."""
-    
-    def __init__(self):
-        self.redis_client = None
-        self.enabled = False
-        
-        if REDIS_AVAILABLE:
-            try:
-                redis_url = _env("REDIS_URL", "redis://localhost:6379/0")
-                self.redis_client = redis.from_url(redis_url, decode_responses=True)
-                self.redis_client.ping()
-                self.enabled = True
-                logger.info("✅ Redis cache enabled")
-            except Exception as e:
-                logger.warning(f"Redis connection failed: {e}. Caching disabled.")
-                self.enabled = False
-    
-    def get(self, key: str) -> Optional[str]:
-        """Get cached value."""
-        if not self.enabled:
-            return None
-        try:
-            return self.redis_client.get(key)
-        except Exception as e:
-            logger.warning(f"Cache get error: {e}")
-            return None
-    
-    def set(self, key: str, value: str, ttl: int = 86400):
-        """Set cached value with TTL (default 24h)."""
-        if not self.enabled:
-            return
-        try:
-            self.redis_client.setex(key, ttl, value)
-        except Exception as e:
-            logger.warning(f"Cache set error: {e}")
-    
-    @staticmethod
-    def make_key(prefix: str, *args) -> str:
-        """Generate cache key from arguments."""
-        content = ":".join(str(arg) for arg in args)
-        hash_suffix = hashlib.md5(content.encode()).hexdigest()[:12]
-        return f"{prefix}:{hash_suffix}"
-
-
-# =============================================================================
-# Configuration helpers
-# =============================================================================
-
-def _env(name: str, default: str = "") -> str:
-    """Get environment variable with default."""
-    return os.getenv(name, default)
+# Note: CacheManager and other utilities are now in pubmed_utils.py
 
 
 # =============================================================================
 # PubMed Search Engine Class
-# =============================================================================
+# ============================================================================
 
 class PubMedSearchEngine:
     """PubMed search engine with advanced filtering and caching."""
@@ -106,10 +50,10 @@ class PubMedSearchEngine:
             email: NCBI email (recommended by NCBI)
             api_key: NCBI API key (increases rate limit to 10 req/s)
         """
-        self.email = email or _env("NCBI_EMAIL")
-        self.api_key = api_key or _env("NCBI_API_KEY")
-        self.tool_name = _env("NCBI_TOOL", "med-assist")
-        self.base_url = _ncbi_base_url()
+        self.email = email or get_env("NCBI_EMAIL")
+        self.api_key = api_key or get_env("NCBI_API_KEY")
+        self.tool_name = get_env("NCBI_TOOL", "med-assist")
+        self.base_url = get_ncbi_base_url()
         self.cache = CacheManager()
     
     def _add_ncbi_credentials(self, params: Dict[str, Any]) -> None:
@@ -284,139 +228,10 @@ class PubMedSearchEngine:
             return []
         
         # Batch fetch (max 200 per request)
-        xml_data = ncbi_fetch(pmids[:200])
-        articles = ncbi_parse_efetch_xml(xml_data)
+        xml_data = fetch_articles_xml(pmids[:200])
+        articles = parse_efetch_xml(xml_data)
         
         return articles
-
-
-# =============================================================================
-# NCBI E-utilities backend
-# =============================================================================
-
-def _ncbi_base_url() -> str:
-    base = _env("NCBI_BASE_URL", "https://eutils.ncbi.nlm.nih.gov/entrez/eutils").strip()
-    return base.rstrip("/")
-
-
-def _add_ncbi_credentials_to_params(params: Dict[str, Any]) -> None:
-    """Add NCBI credentials to request parameters (in-place). Helper for standalone functions."""
-    email = _env("NCBI_EMAIL")
-    api_key = _env("NCBI_API_KEY")
-    tool_name = _env("NCBI_TOOL", "med-assist")
-    
-    if email:
-        params["email"] = email
-    if tool_name:
-        params["tool"] = tool_name
-    if api_key:
-        params["api_key"] = api_key
-
-
-def ncbi_fetch(pmids: List[str], rettype: str = "abstract") -> str:
-    """
-    Fetch article details from PubMed via NCBI EFetch API.
-    Returns XML with abstracts and metadata.
-    """
-    if not pmids:
-        return ""
-    
-    url = f"{_ncbi_base_url()}/efetch.fcgi"
-    
-    params = {
-        "db": "pubmed",
-        "id": ",".join(pmids[:200]),  # Max 200 per request
-        "retmode": "xml",
-        "rettype": rettype,
-    }
-    
-    # Add NCBI credentials
-    _add_ncbi_credentials_to_params(params)
-    
-    logger.info(f"📄 NCBI EFetch: {len(pmids)} PMIDs")
-    
-    response = requests.get(url, params=params, timeout=30)
-    response.raise_for_status()
-    return response.text
-
-
-def ncbi_parse_efetch_xml(xml_text: str) -> List[Dict[str, Any]]:
-    """
-    Parse EFetch XML response into structured article data.
-    """
-    import xml.etree.ElementTree as ET
-    
-    articles = []
-    
-    try:
-        root = ET.fromstring(xml_text)
-        
-        for article in root.findall(".//PubmedArticle"):
-            medline = article.find("MedlineCitation")
-            if medline is None:
-                continue
-            
-            pmid_elem = medline.find("PMID")
-            pmid = pmid_elem.text if pmid_elem is not None else ""
-            
-            article_elem = medline.find("Article")
-            if article_elem is None:
-                continue
-            
-            # Title
-            title_elem = article_elem.find("ArticleTitle")
-            title = title_elem.text if title_elem is not None else ""
-            
-            # Abstract
-            abstract_elem = article_elem.find("Abstract/AbstractText")
-            abstract = abstract_elem.text if abstract_elem is not None else ""
-            
-            # Journal
-            journal_elem = article_elem.find("Journal/Title")
-            journal = journal_elem.text if journal_elem is not None else ""
-            
-            # Publication date
-            pub_date = ""
-            date_elem = article_elem.find("Journal/JournalIssue/PubDate")
-            if date_elem is not None:
-                year = date_elem.find("Year")
-                month = date_elem.find("Month")
-                if year is not None:
-                    pub_date = year.text
-                    if month is not None:
-                        pub_date = f"{month.text} {pub_date}"
-            
-            # Authors
-            authors = []
-            for author in article_elem.findall("AuthorList/Author"):
-                lastname = author.find("LastName")
-                forename = author.find("ForeName")
-                if lastname is not None:
-                    name = lastname.text
-                    if forename is not None:
-                        name = f"{forename.text} {name}"
-                    authors.append(name)
-            
-            # MeSH terms
-            mesh_terms = []
-            for mesh in medline.findall("MeshHeadingList/MeshHeading/DescriptorName"):
-                if mesh.text:
-                    mesh_terms.append(mesh.text)
-            
-            articles.append({
-                "pmid": pmid,
-                "title": title,
-                "abstract": abstract,
-                "journal": journal,
-                "pub_date": pub_date,
-                "authors": authors,
-                "mesh_terms": mesh_terms,
-            })
-    
-    except ET.ParseError as e:
-        logger.error(f"XML parse error: {e}")
-    
-    return articles
 
 
 
@@ -473,7 +288,7 @@ def search_pubmed(
         >>> search_pubmed("CRISPR", journals=["Nature", "Science"], language="eng")
         >>> search_pubmed("diabetes", species=["Humans"], publication_types=["Meta-Analysis"])
     """
-    use_ncbi_setting = _env("PUBMED_USE_NCBI", "true").lower().strip()
+    use_ncbi_setting = get_env("PUBMED_USE_NCBI", "true").lower().strip()
     if use_ncbi_setting in {"false", "0", "no"}:
         return {
             "error": "PUBMED_USE_NCBI is disabled (no custom connector is implemented)",
@@ -484,7 +299,7 @@ def search_pubmed(
             "total": 0,
         }
 
-    if _env("PUBMED_API_KEY") and not _env("NCBI_API_KEY"):
+    if get_env("PUBMED_API_KEY") and not get_env("NCBI_API_KEY"):
         logger.warning(
             "PUBMED_API_KEY is set but NCBI_API_KEY is not set. "
             "This tool uses NCBI E-utilities and will only send an API key if NCBI_API_KEY is provided."

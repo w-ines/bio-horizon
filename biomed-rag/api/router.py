@@ -6,6 +6,7 @@ Each domain has its own file in api/routes/.
 from fastapi import APIRouter
 
 from api.routes import health, cache, kg, conversations, pubmed, ner, upload, ask, users, topics, signals, snapshots, watch_topics
+from api.routes import jobs
 
 api_router = APIRouter()
 
@@ -19,6 +20,7 @@ api_router.include_router(cache.router,         prefix="/cache",          tags=[
 api_router.include_router(kg.router,            prefix="/kg",             tags=["Knowledge Graph"])
 api_router.include_router(conversations.router,  prefix="/conversations",  tags=["Conversations"])
 api_router.include_router(pubmed.router,         prefix="/pubmed",         tags=["PubMed"])
+api_router.include_router(jobs.router,           prefix="/jobs",           tags=["Jobs"])
 api_router.include_router(ner.router,            prefix="/ner",            tags=["NER"])
 api_router.include_router(signals.router,        prefix="/signals",        tags=["Signals"])
 api_router.include_router(snapshots.router,      prefix="/snapshots",      tags=["Snapshots"])

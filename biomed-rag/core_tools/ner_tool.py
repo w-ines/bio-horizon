@@ -91,11 +91,11 @@ def extract_medical_entities_from_text(
     """
     text = _safe_text(text).strip()
     if not text:
-    return {
-        "entities": {},
-        "provider": provider,
-        "error": "Text cannot be empty",
-    }
+        return {
+            "entities": {},
+            "provider": provider,
+            "error": "Text cannot be empty",
+        }
     
     out = router.extract_from_text(text, entity_types=entity_types, provider=provider)
     return _normalize_extraction_result(out)
@@ -131,6 +131,7 @@ def extract_medical_entities_batch(
         normalized = _normalize_extraction_result(result)
 
         article = articles[idx] if idx < len(articles) else {}
+        normalized["pmid"] = article.get("pmid") or ""
         normalized["article"] = {
             "pmid": article.get("pmid"),
             "title": article.get("title"),

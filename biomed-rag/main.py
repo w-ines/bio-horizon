@@ -36,7 +36,7 @@ app.add_middleware(
 # Mount routers
 # =============================================================================
 
-# Main API router (health, ask, upload, kg, pubmed, ner, cache, conversations, users, topics)
+# Main API router (health, ask, upload, kg, pubmed, ner, cache, conversations, users, topics, jobs)
 app.include_router(api_router)
 
 

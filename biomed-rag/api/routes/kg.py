@@ -65,21 +65,27 @@ async def kg_graph(
         # Convert to node-link format
         nodes = []
         for node_id, data in G.nodes(data=True):
+            sources = data.get('sources', [])
             nodes.append({
                 "id": node_id,
                 "label": data.get('label', node_id),
                 "type": data.get('entity_type', 'UNKNOWN'),
                 "frequency": data.get('frequency', 1),
-                "degree": G.degree(node_id)
+                "degree": G.degree(node_id),
+                "sources": sources[:20],
+                "source_count": len(sources),
             })
         
         links = []
         for source, target, data in G.edges(data=True):
+            sources = data.get('sources', [])
             links.append({
                 "source": source,
                 "target": target,
                 "weight": data.get('weight', 1),
-                "relation_type": data.get('relation_type', 'co_occurrence')
+                "relation_type": data.get('relation_type', 'co_occurrence'),
+                "sources": sources[:20],
+                "source_count": len(sources),
             })
         
         return {
@@ -116,3 +122,35 @@ async def kg_top_nodes(n: int = 20, sort_by: str = "frequency"):
         return {"nodes": query_top_nodes(n=n, sort_by=sort_by)}
     except Exception as e:
         return {"error": str(e), "nodes": []}
+
+
+@router.get("/articles")
+async def kg_articles(pmids: str = "", limit: int = 20):
+    """
+    Fetch article metadata for given PMIDs (comma-separated).
+    
+    Used by the frontend when clicking on a KG node/edge to show
+    the source articles with PubMed and PDF links.
+    
+    Query params:
+    - pmids: Comma-separated list of PubMed IDs
+    - limit: Max articles to return (default 20)
+    """
+    try:
+        if not pmids.strip():
+            return {"articles": [], "count": 0}
+        
+        pmid_list = [p.strip() for p in pmids.split(",") if p.strip()][:limit]
+        
+        from storage.articles_repository import fetch_articles_by_pmids
+        articles = fetch_articles_by_pmids(pmid_list)
+        
+        return {
+            "articles": articles,
+            "count": len(articles),
+            "requested": len(pmid_list),
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e), "articles": [], "count": 0}

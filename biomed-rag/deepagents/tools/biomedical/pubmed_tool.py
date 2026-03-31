@@ -7,6 +7,7 @@ It calls the core_tools.pubmed_tool logic.
 from langchain.tools import tool
 
 from core_tools.pubmed_tool import search_pubmed
+from core_tools.job_tool import create_ingestion_job, get_job_status
 
 
 @tool
