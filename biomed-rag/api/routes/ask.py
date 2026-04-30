@@ -24,7 +24,7 @@ def _get_upload_tools():
 
 
 def _build_deep_agent_stream(query: str, conversation_id: str = None):
-    """Return an async generator that streams Deep Agent events."""
+    """Return an async generator that streams LangGraph agent events."""
 
     async def _events():
         import queue
@@ -33,21 +33,59 @@ def _build_deep_agent_stream(query: str, conversation_id: str = None):
         event_queue = queue.Queue()
         final_answer = None
 
-        def stream_callback(event):
-            event_queue.put(event)
-
         def run_agent():
             nonlocal final_answer
             try:
-                from deepagents.agents.main_agent import create_biomedical_agent
+                from deepagents.graphs.ask_graph import get_ask_graph
+                from deepagents.memory import save_message
+                from langchain_core.messages import HumanMessage, AIMessage
 
-                agent = create_biomedical_agent(
-                    conversation_id=conversation_id,
-                    stream_callback=stream_callback,
-                )
+                graph = get_ask_graph()
+                conv_id = conversation_id or "default"
 
-                result = agent.invoke({"input": query})
-                final_answer = result.get("output", str(result)) if isinstance(result, dict) else str(result)
+                # Load history from persistence for this conversation
+                history_messages = []
+                try:
+                    from deepagents.memory import load_history
+                    rows = load_history(conversation_id=conv_id, limit=10)
+                    for r in rows:
+                        if r.role == "user":
+                            history_messages.append(HumanMessage(content=r.content))
+                        elif r.role == "assistant":
+                            history_messages.append(AIMessage(content=r.content))
+                except Exception as e:
+                    print(f"[ask] Could not load history: {e}")
+
+                # Build input messages: history + current query
+                input_messages = history_messages + [HumanMessage(content=query)]
+
+                config = {"configurable": {"thread_id": conv_id}}
+
+                # Stream node-by-node events from LangGraph
+                for event in graph.stream(
+                    {"messages": input_messages, "conversation_id": conv_id, "stream_events": []},
+                    config=config,
+                    stream_mode="updates",
+                ):
+                    # event is a dict {node_name: state_update}
+                    for node_name, update in event.items():
+                        # Forward accumulated stream_events to the SSE queue
+                        for se in update.get("stream_events", []):
+                            event_queue.put(se)
+
+                        # Check if agent node produced a final answer (no tool calls)
+                        for msg in update.get("messages", []):
+                            if isinstance(msg, AIMessage) and not getattr(msg, "tool_calls", None) and msg.content:
+                                final_answer = msg.content
+
+                # Persist conversation to Supabase
+                try:
+                    save_message(conversation_id=conv_id, role="user", content=query)
+                    if final_answer:
+                        save_message(conversation_id=conv_id, role="assistant", content=final_answer)
+                except Exception as e:
+                    print(f"[ask] Memory save skipped: {e}")
+
             except Exception as e:
                 import traceback
                 tb = traceback.format_exc()
@@ -60,7 +98,7 @@ def _build_deep_agent_stream(query: str, conversation_id: str = None):
         agent_thread = threading.Thread(target=run_agent)
         agent_thread.start()
 
-        yield json.dumps({"step": "🚀 Starting Deep Agent..."}, ensure_ascii=False) + "\n"
+        yield json.dumps({"step": "🚀 Starting LangGraph Agent..."}, ensure_ascii=False) + "\n"
 
         while True:
             try:
@@ -75,8 +113,6 @@ def _build_deep_agent_stream(query: str, conversation_id: str = None):
                     if "preview" in event:
                         step_data["preview"] = event["preview"]
                     yield json.dumps(step_data, ensure_ascii=False) + "\n"
-                elif event["type"] == "answer":
-                    pass
 
             except queue.Empty:
                 await asyncio.sleep(0.05)
@@ -86,7 +122,6 @@ def _build_deep_agent_stream(query: str, conversation_id: str = None):
 
         if final_answer:
             print(f"[ask] LLM final response: {final_answer}")
-            print(f"[ask] Checking for URLs in response...")
             import re
             urls = re.findall(r'\[([^\]]+)\]\((https?://[^)]+)\)', final_answer)
             if urls:

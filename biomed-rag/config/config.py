@@ -24,7 +24,6 @@ def setup_encoding():
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     os.environ.setdefault("LANG", "C.UTF-8")
     os.environ.setdefault("LC_ALL", "C.UTF-8")
-    os.environ.setdefault("SMOLAGENTS_VERBOSITY", "0")
     os.environ.setdefault("RICH_FORCE_TERMINAL", "false")
     sys.stdout.reconfigure(encoding='utf-8')
     sys.stderr.reconfigure(encoding='utf-8')
