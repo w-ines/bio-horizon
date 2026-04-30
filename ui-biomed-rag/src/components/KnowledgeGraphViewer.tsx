@@ -7,12 +7,26 @@ const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
 });
 
+interface Article {
+  pmid: string;
+  title: string;
+  journal: string;
+  pub_date: string;
+  authors: string[];
+  pmc_id?: string;
+  doi?: string;
+  pubmed_url?: string;
+  pdf_url?: string;
+}
+
 interface Node {
   id: string;
   label: string;
   type: string;
   frequency: number;
   degree: number;
+  sources?: string[];
+  source_count?: number;
 }
 
 interface Link {
@@ -20,6 +34,8 @@ interface Link {
   target: string;
   weight: number;
   relation_type: string;
+  sources?: string[];
+  source_count?: number;
 }
 
 interface GraphData {
@@ -51,6 +67,8 @@ export function KnowledgeGraphViewer() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
+  const [selectedArticles, setSelectedArticles] = useState<Article[]>([]);
+  const [articlesLoading, setArticlesLoading] = useState(false);
   const [filters, setFilters] = useState({
     entityType: "",
     maxNodes: 100,
@@ -58,6 +76,25 @@ export function KnowledgeGraphViewer() {
   });
 
   const fgRef = useRef<any>(null);
+
+  const fetchArticles = useCallback(async (pmids: string[]) => {
+    if (!pmids.length) {
+      setSelectedArticles([]);
+      return;
+    }
+    setArticlesLoading(true);
+    try {
+      const response = await fetch(
+        `http://localhost:8000/kg/articles?pmids=${pmids.slice(0, 10).join(",")}&limit=10`
+      );
+      const data = await response.json();
+      setSelectedArticles(data.articles || []);
+    } catch {
+      setSelectedArticles([]);
+    } finally {
+      setArticlesLoading(false);
+    }
+  }, []);
 
   const fetchGraphData = useCallback(async () => {
     setLoading(true);
@@ -94,12 +131,17 @@ export function KnowledgeGraphViewer() {
 
   const handleNodeClick = useCallback((node: any) => {
     setSelectedNode(node);
+    setSelectedArticles([]);
+    // Fetch source articles for this node
+    if (node.sources && node.sources.length > 0) {
+      fetchArticles(node.sources);
+    }
     // Center on node
     if (fgRef.current) {
       fgRef.current.centerAt(node.x, node.y, 1000);
       fgRef.current.zoom(2, 1000);
     }
-  }, []);
+  }, [fetchArticles]);
 
   const getNodeColor = (node: Node) => {
     return ENTITY_COLORS[node.type] || ENTITY_COLORS.UNKNOWN;
@@ -416,51 +458,175 @@ export function KnowledgeGraphViewer() {
         )}
       </div>
 
-      {/* Selected Node Details */}
+      {/* Selected Node Details + Source Articles */}
       {selectedNode && (
         <div className="medical-card animate-slideInRight" style={{
           position: "absolute",
-          bottom: "1.5rem",
+          top: "1.5rem",
           right: "1.5rem",
-          padding: "1.5rem",
-          width: "20rem",
-          boxShadow: "var(--card-shadow-lg)"
+          bottom: "1.5rem",
+          padding: "0",
+          width: "24rem",
+          boxShadow: "var(--card-shadow-lg)",
+          display: "flex",
+          flexDirection: "column",
+          overflow: "hidden",
         }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "1rem" }}>
-            <h3 style={{ fontSize: "1.125rem", fontWeight: "600", color: "var(--medical-gray-900)", margin: 0 }}>{selectedNode.label}</h3>
-            <button
-              onClick={() => setSelectedNode(null)}
-              style={{
-                background: "none",
-                border: "none",
-                color: "var(--medical-gray-400)",
-                cursor: "pointer",
-                padding: "0.25rem",
-                fontSize: "1.25rem",
-                lineHeight: 1
-              }}
-            >
-              ✕
-            </button>
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", fontSize: "0.875rem" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ color: "var(--medical-gray-600)" }}>Type:</span>
+          {/* Header */}
+          <div style={{ padding: "1.25rem 1.5rem", borderBottom: "1px solid var(--medical-gray-200)", flexShrink: 0 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: "0.75rem" }}>
+              <h3 style={{ fontSize: "1.125rem", fontWeight: "600", color: "var(--medical-gray-900)", margin: 0 }}>{selectedNode.label}</h3>
+              <button
+                onClick={() => { setSelectedNode(null); setSelectedArticles([]); }}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--medical-gray-400)",
+                  cursor: "pointer",
+                  padding: "0.25rem",
+                  fontSize: "1.25rem",
+                  lineHeight: 1
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: "1rem", fontSize: "0.8125rem" }}>
               <span
-                className="medical-badge"
-                style={{ backgroundColor: getNodeColor(selectedNode), color: "white" }}
+                style={{
+                  backgroundColor: getNodeColor(selectedNode),
+                  color: "white",
+                  padding: "0.125rem 0.5rem",
+                  borderRadius: "4px",
+                  fontWeight: "600",
+                  fontSize: "0.75rem",
+                }}
               >
                 {selectedNode.type}
               </span>
+              <span style={{ color: "var(--medical-gray-600)" }}>
+                Freq: <strong style={{ color: "var(--medical-gray-900)" }}>{selectedNode.frequency}</strong>
+              </span>
+              <span style={{ color: "var(--medical-gray-600)" }}>
+                Links: <strong style={{ color: "var(--medical-gray-900)" }}>{selectedNode.degree}</strong>
+              </span>
             </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "var(--medical-gray-600)" }}>Frequency:</span>
-              <span style={{ fontWeight: "600", color: "var(--medical-gray-900)" }}>{selectedNode.frequency}</span>
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-              <span style={{ color: "var(--medical-gray-600)" }}>Connections:</span>
-              <span style={{ fontWeight: "600", color: "var(--medical-gray-900)" }}>{selectedNode.degree}</span>
-            </div>
+          </div>
+
+          {/* Source Articles */}
+          <div style={{ padding: "1rem 1.5rem 0.5rem", flexShrink: 0 }}>
+            <h4 style={{ fontSize: "0.875rem", fontWeight: "600", color: "var(--medical-gray-700)", margin: 0 }}>
+              Source Articles
+              {selectedNode.source_count ? ` (${selectedNode.source_count})` : ""}
+            </h4>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "0 1.5rem 1.5rem" }}>
+            {articlesLoading ? (
+              <p style={{ fontSize: "0.8125rem", color: "var(--medical-gray-500)", padding: "1rem 0" }}>Loading articles...</p>
+            ) : selectedArticles.length === 0 ? (
+              <p style={{ fontSize: "0.8125rem", color: "var(--medical-gray-500)", padding: "1rem 0" }}>
+                {selectedNode.sources && selectedNode.sources.length > 0
+                  ? "Articles not found in database. Re-run ingestion to populate."
+                  : "No source articles linked."}
+              </p>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", paddingTop: "0.5rem" }}>
+                {selectedArticles.map((article) => (
+                  <div
+                    key={article.pmid}
+                    style={{
+                      padding: "0.75rem",
+                      border: "1px solid var(--medical-gray-200)",
+                      borderRadius: "8px",
+                      fontSize: "0.8125rem",
+                      background: "var(--medical-gray-50, #f9fafb)",
+                    }}
+                  >
+                    <p style={{
+                      fontWeight: "600",
+                      color: "var(--medical-gray-900)",
+                      margin: "0 0 0.375rem 0",
+                      lineHeight: "1.3",
+                      display: "-webkit-box",
+                      WebkitLineClamp: 3,
+                      WebkitBoxOrient: "vertical" as const,
+                      overflow: "hidden",
+                    }}>
+                      {article.title || "Untitled"}
+                    </p>
+                    <p style={{ color: "var(--medical-gray-500)", margin: "0 0 0.5rem 0", fontSize: "0.75rem" }}>
+                      {article.journal}{article.pub_date ? ` - ${article.pub_date}` : ""}
+                    </p>
+                    <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                      {article.pubmed_url && (
+                        <a
+                          href={article.pubmed_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "0.25rem",
+                            padding: "0.25rem 0.5rem",
+                            borderRadius: "4px",
+                            fontSize: "0.6875rem",
+                            fontWeight: "600",
+                            textDecoration: "none",
+                            color: "#0066cc",
+                            background: "#e0f2fe",
+                          }}
+                        >
+                          PubMed
+                        </a>
+                      )}
+                      {article.pdf_url && (
+                        <a
+                          href={article.pdf_url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "0.25rem",
+                            padding: "0.25rem 0.5rem",
+                            borderRadius: "4px",
+                            fontSize: "0.6875rem",
+                            fontWeight: "600",
+                            textDecoration: "none",
+                            color: "#dc2626",
+                            background: "#fef2f2",
+                          }}
+                        >
+                          PDF
+                        </a>
+                      )}
+                      {article.doi && (
+                        <a
+                          href={`https://doi.org/${article.doi}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: "0.25rem",
+                            padding: "0.25rem 0.5rem",
+                            borderRadius: "4px",
+                            fontSize: "0.6875rem",
+                            fontWeight: "600",
+                            textDecoration: "none",
+                            color: "#059669",
+                            background: "#ecfdf5",
+                          }}
+                        >
+                          DOI
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -222,7 +222,7 @@ export function SignalDashboard({ initialSignals = [] }: SignalDashboardProps) {
       {!loading && !error && signals.length > 0 && (
         <div>
           {/* Emerging signals */}
-          {groupedSignals.emerging.length > 0 && (
+          {/* {groupedSignals.emerging.length > 0 && (
             <div style={{ marginBottom: "2rem" }}>
               <h2
                 style={{
@@ -259,7 +259,7 @@ export function SignalDashboard({ initialSignals = [] }: SignalDashboardProps) {
                 ))}
               </div>
             </div>
-          )}
+          )} */}
 
           {/* Accelerating signals */}
           {groupedSignals.accelerating.length > 0 && (

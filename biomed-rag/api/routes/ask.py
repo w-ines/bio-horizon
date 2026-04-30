@@ -85,6 +85,13 @@ def _build_deep_agent_stream(query: str, conversation_id: str = None):
         agent_thread.join()
 
         if final_answer:
+            print(f"[ask] LLM final response: {final_answer}")
+            print(f"[ask] Checking for URLs in response...")
+            import re
+            urls = re.findall(r'\[([^\]]+)\]\((https?://[^)]+)\)', final_answer)
+            if urls:
+                for text, url in urls:
+                    print(f"[ask] Found markdown link: [{text}]({url})")
             yield json.dumps({"response": final_answer, "canHandle": True}, ensure_ascii=False) + "\n"
         else:
             yield json.dumps({"response": "No response generated", "canHandle": False}, ensure_ascii=False) + "\n"

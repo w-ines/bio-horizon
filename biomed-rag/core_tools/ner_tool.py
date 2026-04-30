@@ -71,10 +71,13 @@ def _normalize_extraction_result(result: Any) -> Dict[str, Any]:
     if error is None:
         error = getattr(result, "error", None)
 
+    relations = payload.get("relations") or getattr(result, "relations", []) or []
+
     return {
         "entities": entities,
         "provider": provider,
         "error": error,
+        "relations": list(relations),
     }
 
 

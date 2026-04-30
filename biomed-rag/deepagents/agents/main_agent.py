@@ -108,8 +108,7 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
 - Cite sources with [PMID: ...] format.
 - Be precise: medical information requires accuracy.
 - Never say \"I couldn't find information\" without having attempted at least one tool call.
-- If a tool returns no results, rephrase the query and retry once.
-- When formatting markdown links, use [text](url) format WITHOUT adding extra parentheses after the link."""
+- If a tool returns no results, rephrase the query and retry once."""
         
 
         def _hydrate_from_persistence(self):

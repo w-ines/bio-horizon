@@ -22,6 +22,7 @@ def _safe_text(value: Any) -> str:
 @dataclass(frozen=True)
 class GLiNERNerConfig:
     model_name: str = "fastino/gliner2-base-v1"
+    confidence_threshold: float = 0.7
  
 
 _gliner_instance = None
@@ -55,7 +56,12 @@ def _get_gliner(cfg: GLiNERNerConfig):
 
 def load_gliner_config_from_env() -> GLiNERNerConfig:
     model_name = _env("GLINER_MODEL_NAME", "fastino/gliner2-base-v1").strip() or "fastino/gliner2-base-v1"
-    return GLiNERNerConfig(model_name=model_name)
+    threshold_str = _env("GLINER_CONFIDENCE_THRESHOLD", "0.7").strip()
+    try:
+        threshold = float(threshold_str)
+    except ValueError:
+        threshold = 0.7
+    return GLiNERNerConfig(model_name=model_name, confidence_threshold=threshold)
 
 
 def extract(
@@ -80,14 +86,22 @@ def extract(
     extractor = _get_gliner(cfg)
 
     # Use custom labels if provided (zero-shot mode)
+    _CONTRAST_LABELS = ["PERSON", "LOCATION", "ORGANIZATION", "DATE", "NUMBER", "MISC"]
+    is_custom = bool(custom_labels)
     labels = custom_labels if custom_labels else [str(t).strip() for t in (entity_types or []) if str(t).strip()]
     if not labels:
         labels = ["DISEASE", "DRUG", "GENE", "ANATOMY", "PROTEIN", "CHEMICAL"]
 
+    # For custom labels, add contrast labels so GliNER can discriminate better
+    user_labels = list(labels)
+    if is_custom:
+        contrast = [c for c in _CONTRAST_LABELS if c not in labels]
+        labels = labels + contrast
+
     text = _safe_text(text).strip()
     if not text:
         return NerResult(
-            entities={t: [] for t in labels}, 
+            entities={t: [] for t in user_labels}, 
             provider="gliner", 
             error=None,
             custom_labels=custom_labels,
@@ -96,7 +110,7 @@ def extract(
 
     if extractor is None:
         return NerResult(
-            entities={t: [] for t in labels},
+            entities={t: [] for t in user_labels},
             provider="gliner",
             error="ImportError: gliner2 is not installed",
             custom_labels=custom_labels,
@@ -104,15 +118,26 @@ def extract(
         )
 
     try:
-        res = extractor.extract_entities(text, labels)
+        res = extractor.extract_entities(
+            text, labels,
+            threshold=cfg.confidence_threshold,
+            include_confidence=True,
+        )
         entities_raw: Dict[str, List[Any]] = (res or {}).get("entities", {}) or {}
 
         entities: Dict[str, List[NerEntity]] = {}
-        for label in labels:
+        # Only return results for user-requested labels (not contrast labels)
+        for label in user_labels:
             values = entities_raw.get(label) or []
             entity_list = []
             for v in values:
-                entity_text = _safe_text(v).strip()
+                # Handle both dict (with confidence) and plain string formats
+                if isinstance(v, dict):
+                    entity_text = _safe_text(v.get("text", v.get("word", ""))).strip()
+                    confidence = v.get("confidence", v.get("score", None))
+                else:
+                    entity_text = _safe_text(v).strip()
+                    confidence = None
                 if not entity_text:
                     continue
                 
@@ -123,7 +148,7 @@ def extract(
                 
                 entity_list.append(NerEntity(
                     text=entity_text, 
-                    confidence=None,
+                    confidence=confidence,
                     assertion_status=assertion,
                     label=label
                 ))
@@ -134,12 +159,12 @@ def extract(
             entities=entities, 
             provider="gliner", 
             error=None,
-            custom_labels=custom_labels,
+            custom_labels=custom_labels if is_custom else None,
             assertion_enabled=enable_assertion
         )
     except Exception as e:
         return NerResult(
-            entities={t: [] for t in labels},
+            entities={t: [] for t in user_labels},
             provider="gliner",
             error=f"{type(e).__name__}: {e}",
             custom_labels=custom_labels,
@@ -151,11 +176,11 @@ def _compute_assertion_status(text: str, entity: str) -> str:
     """
     Detect assertion status using centralized assertion module.
     
-    Uses OpenMed Assertion model when available, falls back to heuristics.
+    Uses heuristics (OpenMed disabled to avoid memory issues).
     """
     from ner.assertion import detect_assertion
     
-    return detect_assertion(text, entity, use_openmed=True)
+    return detect_assertion(text, entity, use_openmed=False)
 
 
 def extract_batch(

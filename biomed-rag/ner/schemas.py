@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -38,6 +38,7 @@ class NerResult:
     error: Optional[str] = None
     custom_labels: Optional[List[str]] = None  # Zero-shot custom labels used
     assertion_enabled: bool = False  # Whether assertion status was computed
+    relations: List[Tuple[str, str, str]] = field(default_factory=list)  # (subj_text, relation_type, obj_text)
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -45,6 +46,7 @@ class NerResult:
             "provider": self.provider,
             "error": self.error,
             "assertion_enabled": self.assertion_enabled,
+            "relations": list(self.relations),
         }
         if self.custom_labels:
             result["custom_labels"] = self.custom_labels

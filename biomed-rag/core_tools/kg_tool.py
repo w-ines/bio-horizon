@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List, Mapping, Optional
 
 
@@ -7,9 +8,12 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 from kg import build, query, store
 
 from kg.build import graph_to_snapshot
+from kg.relation_extractor import extract_relations_llm
 from core_tools.ner_tool import (
     extract_medical_entities_from_article,
     extract_medical_entities_batch,
@@ -65,7 +69,13 @@ def ingest_text(
     ner_result = extract_medical_entities_from_text(
         text, entity_types=entity_types, provider=provider,
     )
-    build.add_ner_result_to_graph(_graph, ner_result, source=source)
+    triplets = ner_result.get("relations") or []
+    if not triplets:
+        result = extract_relations_llm(text, ner_result.get("entities", {}))
+        triplets = result.triplets
+        logger.info("[relations] source=%s backend=%s status=%s reason=%s triplets=%d",
+                    source, result.backend, result.status, result.reason, len(triplets))
+    build.add_ner_result_with_relations_to_graph(_graph, ner_result, source=source, semantic_triplets=triplets or None)
     store.persist_graph(_graph)
     return {
         "ner": ner_result,
@@ -84,7 +94,14 @@ def ingest_article(
         article, entity_types=entity_types, provider=provider,
     )
     source = ner_result.get("pmid", "")
-    build.add_ner_result_to_graph(_graph, ner_result, source=source)
+    abstract = article.get("abstract", "") or article.get("text", "")
+    triplets = ner_result.get("relations") or []
+    if not triplets:
+        result = extract_relations_llm(abstract, ner_result.get("entities", {}))
+        triplets = result.triplets
+        logger.info("[relations] pmid=%s backend=%s status=%s reason=%s triplets=%d",
+                    source, result.backend, result.status, result.reason, len(triplets))
+    build.add_ner_result_with_relations_to_graph(_graph, ner_result, source=source, semantic_triplets=triplets or None)
     store.persist_graph(_graph)
     return {
         "ner": ner_result,
@@ -99,10 +116,21 @@ def ingest_articles_batch(
     provider: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run NER batch on multiple articles, then ingest all into the KG."""
+    article_map = {str(a.get("pmid", "")): a for a in articles if a.get("pmid")}
     ner_results = extract_medical_entities_batch(
         articles, entity_types=entity_types, provider=provider,
     )
-    build.add_ner_results_batch(_graph, ner_results)
+    for r in ner_results:
+        source = r.get("pmid") or (r.get("article") or {}).get("pmid") or ""
+        triplets = r.get("relations") or []
+        if not triplets:
+            article = article_map.get(str(source), {})
+            abstract = article.get("abstract", "") or article.get("text", "")
+            result = extract_relations_llm(abstract, r.get("entities", {}))
+            triplets = result.triplets
+            logger.info("[relations] pmid=%s backend=%s status=%s reason=%s triplets=%d",
+                        source, result.backend, result.status, result.reason, len(triplets))
+        build.add_ner_result_with_relations_to_graph(_graph, r, source=source, semantic_triplets=triplets or None)
     store.persist_graph(_graph)
     return {
         "articles_processed": len(ner_results),
@@ -218,9 +246,20 @@ def ingest_from_pubmed(
         for entity_type, entity_list in entities_dict.items():
             total_entities += len(entity_list)
     
-    # Add to Knowledge Graph
-    build.add_ner_results_batch(_graph, ner_results)
-    
+    # Add to Knowledge Graph with semantic relations
+    article_map = {str(a.get("pmid", "")): a for a in articles if a.get("pmid")}
+    for r in ner_results:
+        source = r.get("pmid") or (r.get("article") or {}).get("pmid") or ""
+        triplets = r.get("relations") or []
+        if not triplets:
+            art = article_map.get(str(source), {})
+            abstract = art.get("abstract", "") or art.get("text", "")
+            result = extract_relations_llm(abstract, r.get("entities", {}))
+            triplets = result.triplets
+            logger.info("[relations] pmid=%s backend=%s status=%s reason=%s triplets=%d",
+                        source, result.backend, result.status, result.reason, len(triplets))
+        build.add_ner_result_with_relations_to_graph(_graph, r, source=source, semantic_triplets=triplets or None)
+
     # Persist to Supabase
     store.persist_graph(_graph)
     

@@ -71,11 +71,13 @@ export default function PubMedPage() {
         body: JSON.stringify({
           query,
           max_results: maxResults,
-          mindate,
-          maxdate,
+          start: 0,
+          sort: "relevance",
+          mindate: mindate || "",
+          maxdate: maxdate || "",
           publication_types: selectedPubTypes.length ? selectedPubTypes : null,
           journals: journals.length ? journals : null,
-          language: language || null,
+          language: language || "",
           species: selectedSpecies.length ? selectedSpecies : null,
           fetch_details: true,
         }),
@@ -263,9 +265,9 @@ export default function PubMedPage() {
                 {/* Stats */}
                 <div style={{ display: "flex", gap: "1rem" }}>
                   {[
-                    { label: "Total Results", value: result.total.toLocaleString() },
-                    { label: "Fetched", value: result.articles.length },
-                    { label: "PMIDs", value: result.pmids.length },
+                   { label: "Total Results", value: (result.total ?? 0).toLocaleString() },
+                    { label: "Fetched", value: result.articles?.length ?? 0 },
+                    { label: "PMIDs", value: result.pmids?.length ?? 0 },
                   ].map((s) => (
                     <div key={s.label} className="medical-card" style={{ padding: "1rem 1.25rem", flex: 1, textAlign: "center" }}>
                       <div style={{ fontSize: "1.5rem", fontWeight: "700", color: "#a78bfa" }}>{s.value}</div>
@@ -275,7 +277,7 @@ export default function PubMedPage() {
                 </div>
 
                 {/* Articles */}
-                {result.articles.length > 0 ? (
+                {result.articles && result.articles.length > 0 ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
                     {result.articles.map((article) => {
                       const isExpanded = expandedPmid === article.pmid;

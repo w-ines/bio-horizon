@@ -92,7 +92,10 @@ def detect_assertion_heuristic(text: str, entity_text: str) -> str:
     negation_patterns = [
         "no ", "not ", "without ", "absence of", "lack of",
         "negative for", "ruled out", "excluded", "denied",
-        "free of", "absent", "never"
+        "free of", "absent", "never", "unlikely", "improbable",
+        "does not have", "did not have", "no evidence of",
+        "no sign of", "no indication of", "fails to show",
+        "unremarkable for", "clear of"
     ]
     for pattern in negation_patterns:
         if pattern in context:
@@ -103,7 +106,9 @@ def detect_assertion_heuristic(text: str, entity_text: str) -> str:
         "may ", "might ", "could ", "would ", "should ",
         "potential", "possible", "hypothesis", "suggest",
         "further studies", "needs to be", "remains to be",
-        "if ", "whether ", "unclear"
+        "if ", "whether ", "unclear", "suspected", "presumed",
+        "likely", "probably", "possibly", "consider", "evaluate for",
+        "rule out", "differential", "questionable"
     ]
     for pattern in hypothetical_patterns:
         if pattern in context:
@@ -125,7 +130,7 @@ def detect_assertion_heuristic(text: str, entity_text: str) -> str:
 def detect_assertion(
     text: str,
     entity_text: str,
-    use_openmed: bool = True,
+    use_openmed: bool = False,
     model_name: str = "assertion_detection_superclinical"
 ) -> str:
     """Detect assertion status for an entity.

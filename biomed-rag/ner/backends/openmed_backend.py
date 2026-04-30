@@ -64,11 +64,11 @@ def load_openmed_config_from_env() -> OpenMedNerConfig:
 DEFAULT_OPENMED_MODELS: Dict[str, str] = {
     "DISEASE": "disease_detection_superclinical",
     "DRUG": "pharma_detection_superclinical",
-    "GENE": "gene_detection_genecorpus",
-    "PROTEIN": "protein_detection_bc5cdr",  # Added for spec compliance
+    "GENE": "genome_detection_bioclinical",
+    "PROTEIN": "protein_detection_pubmed",
     "ANATOMY": "anatomy_detection_electramed",
-    "CHEMICAL": "chemical_detection_bc5cdr",  # Added for spec compliance
-    "ONCOLOGY": "disease_detection_superclinical",  # Reuse disease model for oncology
+    "CHEMICAL": "chemical_detection_pubmed",
+    "ONCOLOGY": "oncology_detection_superclinical",
 }
 
 
@@ -128,8 +128,6 @@ def _build_openmed_config(cfg: OpenMedNerConfig):
 
     return OpenMedConfig(
         use_medical_tokenizer=cfg.use_medical_tokenizer,
-        confidence_threshold=cfg.confidence_threshold,
-        group_entities=cfg.group_entities,
     )
 
 
@@ -145,9 +143,11 @@ def _detect_assertion_status(text: str, entity_text: str, config: OpenMedNerConf
         from openmed import analyze_text
         
         # Use OpenMed assertion detection model
+        om_cfg = _build_openmed_config(config)
         result = analyze_text(
             text,
             model_name=config.assertion_model,
+            config=om_cfg,
             confidence_threshold=config.confidence_threshold,
         )
         
@@ -222,7 +222,13 @@ def extract(
         entities: Dict[str, List[NerEntity]] = {t: [] for t in requested}
         for entity_type in requested:
             model_name = models[entity_type]
-            result = analyze_text(text, model_name=model_name, config=om_cfg)
+            result = analyze_text(
+                text,
+                model_name=model_name,
+                config=om_cfg,
+                confidence_threshold=config.confidence_threshold,
+                group_entities=config.group_entities,
+            )
             
             if result is None or not hasattr(result, 'entities'):
                 continue

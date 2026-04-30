@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import SearchForm from "@/features/rag/components/SearchForm";
 import { AgentStepsProvider } from "@/features/rag/hooks/use-agent-steps";
+import { linkifyText } from "@/lib/linkify";
 
 type Message = {
   id: string;
@@ -22,7 +23,15 @@ export default function RagPageContent() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [currentSteps, setCurrentSteps] = useState<AgentStep[]>([]);
   const [loading, setLoading] = useState(false);
-  const [conversationId] = useState(() => `rag_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+  const [conversationId, setConversationId] = useState(() => {
+    if (typeof window !== "undefined") {
+      const stored = localStorage.getItem("bio_horizon_conversation_id");
+      if (stored) return stored;
+    }
+    const newId = `rag_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    if (typeof window !== "undefined") localStorage.setItem("bio_horizon_conversation_id", newId);
+    return newId;
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll vers le bas quand de nouveaux messages arrivent
@@ -67,10 +76,17 @@ export default function RagPageContent() {
     setCurrentSteps(prev => [...prev, stepObj]);
   }
 
+  function startNewChat() {
+    const newId = `rag_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    setConversationId(newId);
+    if (typeof window !== "undefined") localStorage.setItem("bio_horizon_conversation_id", newId);
+    setMessages([]);
+    setCurrentSteps([]);
+  }
+
   function clearChat() {
-    if (confirm("Clear conversation history?")) {
-      setMessages([]);
-      setCurrentSteps([]);
+    if (confirm("Start a new conversation?")) {
+      startNewChat();
     }
   }
 
@@ -234,7 +250,7 @@ export default function RagPageContent() {
                         whiteSpace: "pre-wrap",
                         wordBreak: "break-word"
                       }}>
-                        {msg.content}
+                        {msg.role === "assistant" ? linkifyText(msg.content) : msg.content}
                       </div>
                     </div>
                   </div>

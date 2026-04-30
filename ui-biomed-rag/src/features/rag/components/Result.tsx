@@ -1,3 +1,5 @@
+import MarkdownRenderer from "@/components/MarkdownRenderer";
+
 type Props = {
   answer?: string;
   loading?: boolean;
@@ -48,7 +50,6 @@ export default function Result({ answer, loading }: Props) {
         <h3 style={{ fontSize: "1.25rem", fontWeight: "600", color: "var(--medical-gray-900)", margin: 0 }}>Medical Response</h3>
       </div>
       <div style={{ 
-        whiteSpace: "pre-wrap", 
         fontSize: "0.9375rem", 
         lineHeight: "1.75",
         color: "var(--medical-gray-800)",
@@ -57,7 +58,7 @@ export default function Result({ answer, loading }: Props) {
         borderRadius: "8px",
         border: "1px solid var(--medical-gray-200)"
       }}>
-        {answer}
+        <MarkdownRenderer content={answer} />
       </div>
     </div>
   );

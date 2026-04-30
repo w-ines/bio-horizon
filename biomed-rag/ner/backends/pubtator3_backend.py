@@ -45,7 +45,19 @@ PUBTATOR3_BATCH_SIZE = 50
 # Injected into every batch to prevent 400 when all user PMIDs are too recent.
 _SENTINEL_PMID = "12068308"
 
-# PubTator3 type → Bio-Horizon type
+# PubTator3 relation type (BioREx) → Bio-Horizon relation type
+RELATION_TYPE_MAP: Dict[str, str] = {
+    "Association":          "associated_with",
+    "Positive_Correlation": "activates",
+    "Negative_Correlation": "inhibits",
+    "Bind":                 "binds",
+    "Conversion":           "converts",
+    "Cotreatment":          "cotreatment",
+    "Comparison":           "associated_with",
+    "Predisposes":          "predisposes",
+}
+
+# PubTator3 entity type → Bio-Horizon type
 TYPE_MAP: Dict[str, str] = {
     "Gene": "GENE",
     "Disease": "DISEASE",
@@ -142,6 +154,10 @@ def _parse_bioc_document(
 ) -> NerResult:
     """Convert a single BioC JSON document into a NerResult.
 
+    Parses both entities (PubTator3 NER) and relations (BioREx) from the
+    BioC JSON. Relations are returned as (subject_text, relation_type, object_text)
+    triplets, with relation types mapped to Bio-Horizon conventions.
+
     Args:
         doc: BioC JSON dict from PubTator3
         entity_types: Set of Bio-Horizon entity types to keep (e.g. {"GENE", "DISEASE"}).
@@ -152,15 +168,31 @@ def _parse_bioc_document(
     entities_by_type: Dict[str, List[NerEntity]] = {t: [] for t in keep}
     seen: Dict[str, set] = {t: set() for t in keep}  # dedup by (type, text)
 
+    # Build lookup tables for relation resolution:
+    #   annotation_id → entity text
+    #   identifier (MeSH/NCBI) → entity text
+    ann_id_to_text: Dict[str, str] = {}
+    identifier_to_text: Dict[str, str] = {}
+
     for passage in doc.get("passages", []):
         for ann in passage.get("annotations", []):
             infons = ann.get("infons", {})
             raw_type = infons.get("type", "")
             mapped = TYPE_MAP.get(raw_type)
-            if not mapped or mapped not in keep:
-                continue
 
             text = ann.get("text", "").strip()
+            ann_id = ann.get("id", "")
+            identifier = (infons.get("identifier") or infons.get("id") or "").strip()
+
+            # Populate lookup tables regardless of whether entity type is kept
+            if text:
+                if ann_id:
+                    ann_id_to_text[ann_id] = text
+                if identifier and identifier != "None":
+                    identifier_to_text[identifier] = text
+
+            if not mapped or mapped not in keep:
+                continue
             if not text or len(text) < 2:
                 continue
 
@@ -169,9 +201,6 @@ def _parse_bioc_document(
             if key in seen[mapped]:
                 continue
             seen[mapped].add(key)
-
-            # Extract identifier if available (e.g. NCBI Gene ID, MeSH ID)
-            identifier = infons.get("identifier") or infons.get("id")
 
             # Location info
             locations = ann.get("locations", [])
@@ -190,10 +219,56 @@ def _parse_bioc_document(
                 )
             )
 
+    # Parse BioREx relations from document-level relations array
+    relations = []
+    for rel in doc.get("relations", []):
+        infons = rel.get("infons", {})
+        rel_type_raw = infons.get("type", "")
+        rel_type = RELATION_TYPE_MAP.get(rel_type_raw)
+        if not rel_type:
+            continue
+
+        subj = obj = ""
+
+        # Format A: role1/role2 dicts with normalized_name or identifier
+        role1 = infons.get("role1")
+        role2 = infons.get("role2")
+        if isinstance(role1, dict) and isinstance(role2, dict):
+            subj = (role1.get("normalized_name") or "").strip()
+            if not subj:
+                subj = identifier_to_text.get(role1.get("identifier", ""), "")
+            obj = (role2.get("normalized_name") or "").strip()
+            if not obj:
+                obj = identifier_to_text.get(role2.get("identifier", ""), "")
+
+        # Format B: entity1/entity2 as annotation IDs or identifiers
+        if not (subj and obj):
+            ent1 = str(infons.get("entity1", "")).strip()
+            ent2 = str(infons.get("entity2", "")).strip()
+            if ent1 and ent2:
+                subj = ann_id_to_text.get(ent1) or identifier_to_text.get(ent1, "")
+                obj = ann_id_to_text.get(ent2) or identifier_to_text.get(ent2, "")
+
+        # Format C: nodes array with refid fields
+        if not (subj and obj):
+            nodes = rel.get("nodes", [])
+            if len(nodes) >= 2:
+                subj = ann_id_to_text.get(nodes[0].get("refid", ""), "")
+                obj = ann_id_to_text.get(nodes[1].get("refid", ""), "")
+
+        if subj and obj and subj.lower() != obj.lower():
+            relations.append((subj, rel_type, obj))
+
+    logger.debug(
+        "PubTator3: parsed %d relations from doc %s",
+        len(relations), doc.get("pmid", doc.get("id", "?")),
+    )
+
     return NerResult(
         entities=entities_by_type,
         provider="pubtator3",
         error=None,
+        relations=relations,
     )
 
 

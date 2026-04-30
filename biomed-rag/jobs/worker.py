@@ -368,12 +368,55 @@ class IngestWorker:
         
         logger.info(f"✅ Extracted {entities_count} entities from {len(articles)} articles")
         
-        # Step 3: Add to in-memory KG (fast, no DB write)
+        # Step 3: Add to in-memory KG with semantic relations (no DB write yet).
+        # PubTator3 relations are used if available; otherwise LLM fallback.
         # Persistence happens once at end of job in _process_batches.
         if entities_count > 0:
+            from kg.relation_extractor import extract_relations_llm
+
             graph = get_graph()
-            build.add_ner_results_batch(graph, ner_results)
-            logger.info(f"✅ Added {entities_count} entities to in-memory KG ({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)")
+            article_map = {a.get("pmid", ""): a for a in articles if a.get("pmid")}
+            semantic_count = 0
+
+            for r in ner_results:
+                source = r.get("pmid") or (r.get("article") or {}).get("pmid") or ""
+                triplets = r.get("relations") or []
+                re_backend = "pubtator3" if triplets else "none"
+                re_status = "ok" if triplets else "n/a"
+                re_reason = f"{len(triplets)}_pubtator3" if triplets else ""
+
+                # LLM fallback when no relations found (regardless of provider)
+                if not triplets:
+                    abstract = article_map.get(source, {}).get("abstract", "")
+                    entities = r.get("entities", {})
+                    if abstract and entities:
+                        result = await loop.run_in_executor(
+                            None,
+                            lambda ab=abstract, ent=entities: extract_relations_llm(ab, ent),
+                        )
+                        triplets = result.triplets
+                        re_backend = result.backend
+                        re_status = result.status
+                        re_reason = result.reason
+
+                ent_count = sum(len(v) for v in r.get("entities", {}).values())
+                logger.info(
+                    f"[relations] pmid={source} provider={r.get('provider')} "
+                    f"entities={ent_count} "
+                    f"pubtator_relations={len(r.get('relations') or [])} "
+                    f"final_triplets={len(triplets)} "
+                    f"backend={re_backend} status={re_status} reason={re_reason}"
+                )
+
+                semantic_count += len(triplets)
+                build.add_ner_result_with_relations_to_graph(
+                    graph, r, source=source, semantic_triplets=triplets or None
+                )
+
+            logger.info(
+                f"✅ Added {entities_count} entities + {semantic_count} semantic triplets "
+                f"to KG ({graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges)"
+            )
         else:
             logger.info("⏭️  No new entities in this batch")
         

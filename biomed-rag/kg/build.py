@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from itertools import combinations
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import networkx as nx
 
@@ -71,22 +70,31 @@ def _ensure_edge(
         )
 
 
-def add_ner_result_to_graph(
+def add_ner_result_with_relations_to_graph(
     G: nx.Graph,
     ner_result: Dict[str, Any],
     *,
     source: str = "",
+    semantic_triplets: Optional[List[Tuple[str, str, str]]] = None,
 ) -> nx.Graph:
-    """Ingest a single NER result dict into the graph.
+    """Ingest a NER result into the graph using LLM semantic relation triplets.
 
-    Expected shape (what ner_tool returns):
-      {"entities": {"DISEASE": [{"text": ..., "confidence": ...}, ...], ...}, ...}
+    Nodes are always created for all extracted entities.
+    Edges are only created for entity pairs covered by semantic_triplets
+    (e.g. 'treats', 'inhibits', 'causes'). Pairs with no LLM-extracted
+    relation get no edge — no co_occurrence fallback.
 
-    All entities from the same source are connected by co-occurrence edges.
+    Args:
+        G: NetworkX graph.
+        ner_result: NER result dict with 'entities' key.
+        source: PMID of the source article.
+        semantic_triplets: List of (subject_text, relation_type, object_text).
     """
     entities_by_type: Dict[str, list] = ner_result.get("entities", {})
     source = source or ner_result.get("pmid", "")
 
+    # Map normalized text → node_id for triplet lookup
+    text_to_nid: Dict[str, str] = {}
     node_ids: List[str] = []
     for entity_type, entities in entities_by_type.items():
         for ent in (entities or []):
@@ -96,34 +104,16 @@ def add_ner_result_to_graph(
             confidence = ent.get("confidence") if isinstance(ent, dict) else None
             nid = _ensure_node(G, entity_type, text, source=source, confidence=confidence)
             node_ids.append(nid)
+            text_to_nid[text.strip().lower()] = nid
 
-    # co-occurrence edges: all pairs within the same source
-    for a, b in combinations(set(node_ids), 2):
-        _ensure_edge(G, a, b, source=source)
+    # Add semantic edges from LLM triplets only
+    for subj_text, rel_type, obj_text in (semantic_triplets or []):
+        nid_a = text_to_nid.get(subj_text.strip().lower())
+        nid_b = text_to_nid.get(obj_text.strip().lower())
+        if nid_a and nid_b and nid_a != nid_b:
+            _ensure_edge(G, nid_a, nid_b, source=source, relation_type=rel_type)
 
     return G
-
-
-def add_ner_results_batch(
-    G: nx.Graph,
-    ner_results: List[Dict[str, Any]],
-) -> nx.Graph:
-    """Ingest a batch of NER results (from extract_medical_entities_batch)."""
-    for r in ner_results:
-        source = r.get("pmid") or ""
-        if not source:
-            art = r.get("article") or {}
-            source = art.get("pmid") or ""
-        add_ner_result_to_graph(G, r, source=source)
-    return G
-
-
-def build_graph_from_ner_results(
-    ner_results: List[Dict[str, Any]],
-) -> nx.Graph:
-    """Convenience: create a new graph and ingest a batch of NER results."""
-    G = new_graph()
-    return add_ner_results_batch(G, ner_results)
 
 
 def graph_to_snapshot(G: nx.Graph) -> KgSnapshot:
