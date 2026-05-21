@@ -101,6 +101,7 @@ export default function NerPage() {
   const [fileError, setFileError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
   const [viewMode, setViewMode] = useState<"entities" | "relgraph">("entities");
+  const [showAllRelations, setShowAllRelations] = useState(false);
   const relGraphRef = useRef<any>(null);
 
   const toggleType = (val: string) =>
@@ -682,7 +683,7 @@ export default function NerPage() {
                       </span>
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-                      {result.relations.map((rel, i) => (
+                      {(showAllRelations ? result.relations : result.relations.slice(0, 10)).map((rel, i) => (
                         <div key={i} style={{
                           display: "flex", alignItems: "center", gap: "0.5rem",
                           padding: "0.5rem 0.75rem", borderRadius: "8px",
@@ -715,6 +716,39 @@ export default function NerPage() {
                         </div>
                       ))}
                     </div>
+                    {result.relations.length > 10 && (
+                      <button
+                        onClick={() => setShowAllRelations((v) => !v)}
+                        style={{
+                          marginTop: "0.625rem",
+                          width: "100%",
+                          padding: "0.5rem",
+                          borderRadius: "8px",
+                          border: "1.5px solid #c4b5fd",
+                          background: "#faf5ff",
+                          color: "#7c3aed",
+                          fontSize: "0.8125rem",
+                          fontWeight: "600",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          gap: "0.375rem",
+                        }}
+                      >
+                        {showAllRelations ? (
+                          <>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="18 15 12 9 6 15" /></svg>
+                            Show less
+                          </>
+                        ) : (
+                          <>
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+                            Show {result.relations.length - 10} more relations
+                          </>
+                        )}
+                      </button>
+                    )}
                   </div>
                 )}
 
