@@ -17,6 +17,7 @@ async def ner_extract(request: NerExtractRequest):
     - F2a: Standard NER (DISEASE, DRUG, GENE, PROTEIN, ANATOMY, CHEMICAL)
     - F2b: Zero-shot custom labels (BRAIN_REGION, BIOMARKER, etc.)
     - F2c: Assertion status (PRESENT, NEGATED, HYPOTHETICAL, HISTORICAL)
+    - F2d: Relation extraction (Upregulator, Downregulator, Agonist, Antagonist, Substrate)
     """
     try:
         from ner.router import extract_from_text
@@ -25,6 +26,7 @@ async def ner_extract(request: NerExtractRequest):
             entity_types=request.entity_types,
             custom_labels=request.custom_labels,
             enable_assertion=request.enable_assertion,
+            enable_relations=request.enable_relations,
             provider=request.provider,
         )
         return result.to_dict()

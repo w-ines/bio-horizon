@@ -248,6 +248,37 @@ def load_snapshot_from_file(
 # Supabase-based Snapshot Storage (persistent database)
 # =============================================================================
 
+def _snapshot_to_data(snapshot: KgSnapshot) -> Dict[str, Any]:
+    """Convert a KgSnapshot to a serializable dict."""
+    return {
+        "nodes": [
+            {
+                "id": n.id,
+                "label": n.label,
+                "entity_type": n.entity_type,
+                "frequency": n.frequency,
+                "sources": n.sources or [],
+                "job_ids": n.job_ids or [],
+                "confidence_max": n.confidence_max,
+                "metadata": n.metadata or {},
+            }
+            for n in snapshot.nodes
+        ],
+        "edges": [
+            {
+                "source_id": e.source_id,
+                "target_id": e.target_id,
+                "weight": e.weight,
+                "relation_type": e.relation_type,
+                "sources": e.sources or [],
+                "job_ids": e.job_ids or [],
+                "metadata": e.metadata or {},
+            }
+            for e in snapshot.edges
+        ],
+    }
+
+
 def save_snapshot_to_supabase(
     G: nx.Graph,
     week_label: Optional[str] = None,
@@ -276,37 +307,12 @@ def save_snapshot_to_supabase(
     
     snapshot = graph_to_snapshot(G)
     
-    # Prepare snapshot data
     snapshot_data = {
         "week_label": week_label,
         "snapshot_date": date.today().isoformat(),
         "node_count": len(snapshot.nodes),
         "edge_count": len(snapshot.edges),
-        "data": {
-            "nodes": [
-                {
-                    "id": n.id,
-                    "label": n.label,
-                    "entity_type": n.entity_type,
-                    "frequency": n.frequency,
-                    "sources": n.sources or [],
-                    "confidence_max": n.confidence_max,
-                    "metadata": n.metadata or {},
-                }
-                for n in snapshot.nodes
-            ],
-            "edges": [
-                {
-                    "source_id": e.source_id,
-                    "target_id": e.target_id,
-                    "weight": e.weight,
-                    "relation_type": e.relation_type,
-                    "sources": e.sources or [],
-                    "metadata": e.metadata or {},
-                }
-                for e in snapshot.edges
-            ],
-        },
+        "data": _snapshot_to_data(snapshot),
     }
     
     try:
@@ -326,6 +332,87 @@ def save_snapshot_to_supabase(
         return None
     except Exception as e:
         print(f"[snapshots] Failed to save to Supabase: {e}")
+        return None
+
+
+def save_job_snapshot(
+    G: nx.Graph,
+    job_id: str,
+    query: str,
+) -> Optional[int]:
+    """
+    Save a per-job snapshot: only the nodes/edges that belong to this job_id.
+    
+    This enables per-job graph visualization and temporal comparison of the
+    same query across different ingestion runs.
+    
+    Args:
+        G: Full global NetworkX graph.
+        job_id: The ingestion job ID.
+        query: The search query that produced this job.
+        
+    Returns:
+        Snapshot ID from Supabase, or None if Supabase not configured.
+    """
+    from storage.supabase_client import get_supabase_client, SupabaseNotConfigured
+    
+    # Filter: only nodes/edges that belong to this job
+    job_nodes = []
+    for nid, data in G.nodes(data=True):
+        if job_id in (data.get("job_ids") or []):
+            job_nodes.append(KgNode(
+                id=nid,
+                label=data.get("label", ""),
+                entity_type=data.get("entity_type", ""),
+                frequency=data.get("frequency", 1),
+                sources=data.get("sources", []),
+                job_ids=data.get("job_ids", []),
+                confidence_max=data.get("confidence_max"),
+            ))
+    
+    job_edges = []
+    for a, b, data in G.edges(data=True):
+        if job_id in (data.get("job_ids") or []):
+            job_edges.append(KgEdge(
+                source_id=a,
+                target_id=b,
+                weight=data.get("weight", 1),
+                relation_type=data.get("relation_type", "co_occurrence"),
+                sources=data.get("sources", []),
+                job_ids=data.get("job_ids", []),
+            ))
+    
+    job_snapshot = KgSnapshot(nodes=job_nodes, edges=job_edges)
+    
+    snapshot_data = {
+        "job_id": job_id,
+        "query": query,
+        "week_label": get_week_label(),
+        "snapshot_date": date.today().isoformat(),
+        "node_count": len(job_snapshot.nodes),
+        "edge_count": len(job_snapshot.edges),
+        "data": _snapshot_to_data(job_snapshot),
+    }
+    
+    try:
+        client = get_supabase_client()
+        
+        result = client.table("kg_snapshots").upsert(
+            snapshot_data,
+            on_conflict="job_id"
+        ).execute()
+        
+        if result.data and len(result.data) > 0:
+            snapshot_id = result.data[0].get("id")
+            print(f"[snapshots] Saved job snapshot: job_id={job_id} query='{query}' "
+                  f"nodes={len(job_nodes)} edges={len(job_edges)}")
+            return snapshot_id
+        return None
+        
+    except SupabaseNotConfigured:
+        return None
+    except Exception as e:
+        print(f"[snapshots] Failed to save job snapshot: {e}")
         return None
 
 

@@ -67,6 +67,7 @@ def persist_graph(G: nx.Graph) -> int:
                 "entity_type": n.entity_type,
                 "frequency": n.frequency,
                 "sources": n.sources or [],
+                "job_ids": n.job_ids or [],
                 "confidence_max": n.confidence_max,
                 "metadata": n.metadata or {},
             }
@@ -79,6 +80,7 @@ def persist_graph(G: nx.Graph) -> int:
                 "weight": e.weight,
                 "relation_type": e.relation_type,
                 "sources": e.sources or [],
+                "job_ids": e.job_ids or [],
                 "metadata": e.metadata or {},
             }
             for e in snap.edges
@@ -139,6 +141,7 @@ def load_graph() -> nx.Graph:
             entity_type=r.get("entity_type", ""),
             frequency=r.get("frequency", 1),
             sources=r.get("sources") or [],
+            job_ids=r.get("job_ids") or [],
             confidence_max=r.get("confidence_max"),
             metadata=r.get("metadata") or {},
         )
@@ -154,6 +157,7 @@ def load_graph() -> nx.Graph:
             weight=r.get("weight", 1),
             relation_type=r.get("relation_type", "co_occurrence"),
             sources=r.get("sources") or [],
+            job_ids=r.get("job_ids") or [],
             metadata=r.get("metadata") or {},
         )
 

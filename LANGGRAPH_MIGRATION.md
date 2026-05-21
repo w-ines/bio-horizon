@@ -98,12 +98,12 @@ deepagents/
 - [x] Intégrer router + planner dans `ask_graph.py` : START → router → planner → agent ↔ tools → END
 - [x] Graph compilé et testé (6 nœuds, 6 edges)
 
-### Phase 3 — Sub-graph Ingestion (2 jours)
+### Phase 3 — Sub-graph Ingestion ✅
 
-- [ ] Créer `graphs/ingestion_graph.py` : PubMed → NER → KG → Persist
-- [ ] Migrer la logique de `IngestWorker._process_batches()` en nœuds
-- [ ] Utiliser le checkpointer LangGraph (remplace `_save_checkpoint` maison)
-- [ ] Tester la reprise sur erreur
+- [x] Créer `graphs/ingestion_graph.py` : PubMed → NER → KG → Persist (7 nœuds, 7 edges)
+- [x] Migrer la logique de `IngestWorker._process_batches()` en nœuds (`nodes/ingestion.py`)
+- [x] Utiliser le checkpointer LangGraph (`MemorySaver`, reprise via thread_id)
+- [ ] Tester la reprise sur erreur en production (nécessite PubMed + Redis)
 
 ### Phase 4 — Sub-graph Signals (1 jour)
 

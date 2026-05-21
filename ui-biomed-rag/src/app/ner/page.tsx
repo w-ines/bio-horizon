@@ -11,12 +11,12 @@ const CHUNK_SIZE = 5000; // characters per chunk for NER processing
 
 // F2a: Standard entity types from spec
 const ENTITY_TYPE_OPTIONS = [
-  { label: "Disease", value: "DISEASE", color: "#dc2626", bg: "#fee2e2" },
-  { label: "Drug", value: "DRUG", color: "#7c3aed", bg: "#ede9fe" },
-  { label: "Gene", value: "GENE", color: "#0066cc", bg: "#e6f2ff" },
-  { label: "Protein", value: "PROTEIN", color: "#059669", bg: "#d1fae5" },
-  { label: "Anatomy", value: "ANATOMY", color: "#b45309", bg: "#fef3c7" },
-  { label: "Chemical", value: "CHEMICAL", color: "#0891b2", bg: "#cffafe" },
+  { label: "Disease",  value: "DISEASE",  color: "#F07068", bg: "#fee8e7" },
+  { label: "Drug",     value: "DRUG",     color: "#72C4BE", bg: "#e0f5f3" },
+  { label: "Gene",     value: "GENE",     color: "#A8CC60", bg: "#f2f8e6" },
+  { label: "Protein",  value: "PROTEIN",  color: "#C3B7DA", bg: "#f0ecf8" },
+  { label: "Anatomy",  value: "ANATOMY",  color: "#6B9FBD", bg: "#e8f1f7" },
+  { label: "Chemical", value: "CHEMICAL", color: "#F0A347", bg: "#fef4e3" },
   { label: "Oncology", value: "ONCOLOGY", color: "#ec4899", bg: "#fce7f3" },
 ];
 
@@ -31,6 +31,27 @@ const ASSERTION_COLORS: Record<string, { color: string; bg: string }> = {
 const ENTITY_COLORS: Record<string, { color: string; bg: string }> = Object.fromEntries(
   ENTITY_TYPE_OPTIONS.map((e) => [e.value, { color: e.color, bg: e.bg }])
 );
+
+const NER_RELATION_COLORS: Record<string, string> = {
+  activates:       "#16a34a",
+  inhibits:        "#dc2626",
+  causes:          "#ea580c",
+  treats:          "#2563eb",
+  associated_with: "#0891b2",
+  interacts_with:  "#db2777",
+  interacts:       "#db2777",
+  Upregulator:     "#16a34a",
+  Downregulator:   "#dc2626",
+  Agonist:         "#2563eb",
+  Antagonist:      "#ea580c",
+  Substrate:       "#7c3aed",
+  binds:           "#4f46e5",
+  expressed_in:    "#0e7490",
+  located_in:      "#92400e",
+  predisposes:     "#ca8a04",
+  cotreatment:     "#65a30d",
+  converts:        "#7c3aed",
+};
 
 const EXAMPLE_TEXTS = [
   {
@@ -62,6 +83,7 @@ interface NerResult {
   error?: string;
   custom_labels?: string[];  // F2b: Zero-shot custom labels
   assertion_enabled?: boolean;  // F2c: Whether assertion was computed
+  relations?: [string, string, string][];  // F2d: [entity1, relation_type, entity2]
 }
 
 export default function NerPage() {
@@ -71,14 +93,15 @@ export default function NerPage() {
   );
   const [customLabels, setCustomLabels] = useState("");  // F2b: Custom zero-shot labels
   const [enableAssertion, setEnableAssertion] = useState(false);  // F2c: Assertion status
+  const [enableRelations] = useState(true);  // F2d: Relation extraction (always enabled)
   const [provider, setProvider] = useState("gliner");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<NerResult | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
-  const [viewMode, setViewMode] = useState<"entities" | "graph">("entities");
-  const graphRef = useRef<any>(null);
+  const [viewMode, setViewMode] = useState<"entities" | "relgraph">("entities");
+  const relGraphRef = useRef<any>(null);
 
   const toggleType = (val: string) =>
     setSelectedTypes((prev) =>
@@ -205,6 +228,7 @@ export default function NerPage() {
     try {
       // Merged result across all chunks
       const mergedEntities: Record<string, Entity[]> = {};
+      let mergedRelations: [string, string, string][] = [];
       let lastProvider = provider;
       let lastError: string | undefined;
 
@@ -221,6 +245,7 @@ export default function NerPage() {
             entity_types: entityTypesPayload,
             custom_labels: customLabelsPayload,
             enable_assertion: enableAssertion,
+            enable_relations: enableRelations,
             provider,
           }),
         });
@@ -231,6 +256,7 @@ export default function NerPage() {
           continue;
         }
         if (data.provider) lastProvider = data.provider;
+        if (data.relations) mergedRelations = mergedRelations.concat(data.relations);
 
         // Merge entities: deduplicate by (type, text) pair
         for (const [type, entities] of Object.entries(data.entities)) {
@@ -252,6 +278,7 @@ export default function NerPage() {
         error: lastError,
         custom_labels: customLabelsPayload || undefined,
         assertion_enabled: enableAssertion,
+        relations: mergedRelations.length > 0 ? mergedRelations : undefined,
       });
     } catch (e) {
       setResult({ entities: {}, error: String(e) });
@@ -265,63 +292,41 @@ export default function NerPage() {
     ? Object.values(result.entities).reduce((sum, arr) => sum + arr.length, 0)
     : 0;
 
-  // Build co-occurrence graph from NER results + original text
-  const graphData = useMemo(() => {
-    if (!result || !text) return { nodes: [], links: [] };
+  // Build knowledge graph from extracted relations (F2d)
+  const relGraphData = useMemo(() => {
+    if (!result?.relations?.length) return { nodes: [], links: [] };
 
-    // Collect all entities with their type
-    const allEntities: { text: string; type: string }[] = [];
+    const entityTypeMap = new Map<string, string>();
+    const entityAssertionMap = new Map<string, string>();
     for (const [type, entities] of Object.entries(result.entities)) {
       for (const ent of entities) {
-        if (ent.text.trim()) allEntities.push({ text: ent.text, type });
+        entityTypeMap.set(ent.text, type);
+        if (ent.assertion_status) entityAssertionMap.set(ent.text, ent.assertion_status);
       }
     }
-    if (allEntities.length === 0) return { nodes: [], links: [] };
 
-    // Split text into sentences
-    const sentences = text.split(/[.!?\n]+/).filter((s) => s.trim().length > 10);
+    const nodeMap = new Map<string, any>();
+    const links: any[] = [];
 
-    // Build co-occurrence links: entities in same sentence
-    const linkMap = new Map<string, number>();
-    for (const sentence of sentences) {
-      const lower = sentence.toLowerCase();
-      const found = allEntities.filter((e) => lower.includes(e.text.toLowerCase()));
-      for (let i = 0; i < found.length; i++) {
-        for (let j = i + 1; j < found.length; j++) {
-          if (found[i].text === found[j].text) continue;
-          const key = [found[i].text, found[j].text].sort().join("|||");
-          linkMap.set(key, (linkMap.get(key) || 0) + 1);
+    for (const [e1, relType, e2] of result.relations) {
+      for (const text of [e1, e2]) {
+        if (!nodeMap.has(text)) {
+          const type = entityTypeMap.get(text) || "UNKNOWN";
+          const style = ENTITY_COLORS[type] || { color: "#475569", bg: "#f1f5f9" };
+          nodeMap.set(text, {
+            id: text, label: text, type,
+            color: style.color, bg: style.bg,
+            assertion: entityAssertionMap.get(text),
+          });
         }
       }
+      links.push({ source: e1, target: e2, relation_type: relType });
     }
 
-    // Only keep entities that have at least one link
-    const connectedEntities = new Set<string>();
-    for (const key of linkMap.keys()) {
-      const [a, b] = key.split("|||");
-      connectedEntities.add(a);
-      connectedEntities.add(b);
-    }
+    return { nodes: Array.from(nodeMap.values()), links };
+  }, [result]);
 
-    const nodes = allEntities
-      .filter((e) => connectedEntities.has(e.text))
-      .map((e) => {
-        const style = ENTITY_COLORS[e.type] || { color: "#475569", bg: "#f1f5f9" };
-        return { id: e.text, label: e.text, type: e.type, color: style.color };
-      });
-
-    // Deduplicate nodes by id
-    const uniqueNodes = Array.from(new Map(nodes.map((n) => [n.id, n])).values());
-
-    const links = Array.from(linkMap.entries()).map(([key, weight]) => {
-      const [source, target] = key.split("|||");
-      return { source, target, weight };
-    });
-
-    return { nodes: uniqueNodes, links };
-  }, [result, text]);
-
-  const paintNode = useCallback((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+  const paintRelNode = useCallback((node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
     const label = node.label || node.id;
     const fontSize = Math.max(12 / globalScale, 3);
     ctx.font = `600 ${fontSize}px Inter, sans-serif`;
@@ -329,22 +334,30 @@ export default function NerPage() {
     const padding = fontSize * 0.4;
     const boxWidth = textWidth + padding * 2;
     const boxHeight = fontSize + padding * 2;
-
-    // Background pill
-    ctx.fillStyle = node.color + "22";
-    ctx.strokeStyle = node.color;
-    ctx.lineWidth = 1.5 / globalScale;
     const r = boxHeight / 2;
+
+    ctx.fillStyle = node.bg || node.color + "22";
+    const assertStyle = node.assertion ? ASSERTION_COLORS[node.assertion] : null;
+    ctx.strokeStyle = assertStyle ? assertStyle.color : node.color;
+    ctx.lineWidth = (assertStyle && node.assertion !== "PRESENT" ? 2.5 : 1.5) / globalScale;
     ctx.beginPath();
     ctx.roundRect(node.x - boxWidth / 2, node.y - boxHeight / 2, boxWidth, boxHeight, r);
     ctx.fill();
     ctx.stroke();
 
-    // Label
     ctx.fillStyle = node.color;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, node.x, node.y);
+
+    // Small assertion dot top-right
+    if (node.assertion && assertStyle) {
+      const dotR = Math.max(2, 4 / globalScale);
+      ctx.beginPath();
+      ctx.arc(node.x + boxWidth / 2 - dotR, node.y - boxHeight / 2 + dotR, dotR, 0, 2 * Math.PI);
+      ctx.fillStyle = assertStyle.color;
+      ctx.fill();
+    }
   }, []);
 
   return (
@@ -622,6 +635,7 @@ export default function NerPage() {
               </p>
             </div>
 
+
             {/* Error */}
             {result?.error && (
               <div className="medical-card" style={{ padding: "1.25rem", borderLeft: "4px solid var(--medical-error)" }}>
@@ -652,6 +666,58 @@ export default function NerPage() {
                   </div>
                 </div>
 
+                {/* F2d: Relations display */}
+                {result.relations && result.relations.length > 0 && (
+                  <div className="medical-card" style={{ padding: "1.25rem", border: "1px solid #e9d5ff" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.875rem" }}>
+                      <span style={{ fontSize: "1.125rem" }}>🔗</span>
+                      <h3 style={{ margin: 0, fontSize: "0.9375rem", fontWeight: "600", color: "#7c3aed" }}>
+                        Relations Extracted
+                      </h3>
+                      <span style={{
+                        fontSize: "0.6875rem", fontWeight: "700", padding: "0.125rem 0.5rem",
+                        borderRadius: "9999px", background: "#fdf4ff", color: "#7c3aed",
+                      }}>
+                        {result.relations.length}
+                      </span>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                      {result.relations.map((rel, i) => (
+                        <div key={i} style={{
+                          display: "flex", alignItems: "center", gap: "0.5rem",
+                          padding: "0.5rem 0.75rem", borderRadius: "8px",
+                          background: "#faf5ff", border: "1px solid #e9d5ff",
+                        }}>
+                          <span style={{
+                            padding: "0.25rem 0.625rem", borderRadius: "6px",
+                            background: "#ede9fe", color: "#5b21b6",
+                            fontSize: "0.8125rem", fontWeight: "600",
+                          }}>
+                            {rel[0]}
+                          </span>
+                          <span style={{
+                            fontSize: "0.75rem", fontWeight: "700", color: "#7c3aed",
+                            padding: "0.125rem 0.5rem", borderRadius: "4px",
+                            background: "white", border: "1px solid #c4b5fd",
+                          }}>
+                            {rel[1]}
+                          </span>
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
+                          </svg>
+                          <span style={{
+                            padding: "0.25rem 0.625rem", borderRadius: "6px",
+                            background: "#ede9fe", color: "#5b21b6",
+                            fontSize: "0.8125rem", fontWeight: "600",
+                          }}>
+                            {rel[2]}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* View mode toggle */}
                 <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center" }}>
                   <button
@@ -671,23 +737,25 @@ export default function NerPage() {
                     </svg>
                     Entities
                   </button>
-                  <button
-                    onClick={() => setViewMode("graph")}
-                    style={{
-                      padding: "0.5rem 1.25rem", borderRadius: "8px", cursor: "pointer",
-                      border: `1.5px solid ${viewMode === "graph" ? "#fbbf24" : "#e2e8f0"}`,
-                      background: viewMode === "graph" ? "rgba(251,191,36,0.1)" : "white",
-                      color: viewMode === "graph" ? "#b45309" : "#64748b",
-                      fontWeight: viewMode === "graph" ? "600" : "400",
-                      fontSize: "0.8125rem", display: "flex", alignItems: "center", gap: "0.375rem",
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <circle cx="6" cy="6" r="3" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="18" r="3" />
-                      <line x1="8.5" y1="7.5" x2="15.5" y2="16.5" /><line x1="15.5" y1="7.5" x2="8.5" y2="16.5" />
-                    </svg>
-                    Co-occurrence Graph
-                  </button>
+                  {result?.relations && result.relations.length > 0 && (
+                    <button
+                      onClick={() => setViewMode("relgraph")}
+                      style={{
+                        padding: "0.5rem 1.25rem", borderRadius: "8px", cursor: "pointer",
+                        border: `1.5px solid ${viewMode === "relgraph" ? "#7c3aed" : "#e2e8f0"}`,
+                        background: viewMode === "relgraph" ? "rgba(124,58,237,0.08)" : "white",
+                        color: viewMode === "relgraph" ? "#7c3aed" : "#64748b",
+                        fontWeight: viewMode === "relgraph" ? "600" : "400",
+                        fontSize: "0.8125rem", display: "flex", alignItems: "center", gap: "0.375rem",
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="5" cy="12" r="3" /><circle cx="19" cy="5" r="3" /><circle cx="19" cy="19" r="3" />
+                        <line x1="8" y1="11" x2="16" y2="6.5" /><line x1="8" y1="13" x2="16" y2="17.5" />
+                      </svg>
+                      Knowledge Graph
+                    </button>
+                  )}
                 </div>
 
                 {/* Entities view */}
@@ -765,64 +833,129 @@ export default function NerPage() {
                   </>
                 )}
 
-                {/* Graph view */}
-                {viewMode === "graph" && (
-                  <div className="medical-card" style={{ padding: "1.25rem" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.75rem" }}>
-                      <h3 style={{ margin: 0, fontSize: "0.9375rem", fontWeight: "600", color: "#0f172a" }}>
-                        Co-occurrence Graph
-                      </h3>
-                      <span style={{ fontSize: "0.75rem", color: "#64748b" }}>
-                        {graphData.nodes.length} nodes · {graphData.links.length} links
-                      </span>
-                    </div>
-                    {graphData.nodes.length > 0 ? (
-                      <>
-                        {/* Legend */}
-                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", marginBottom: "0.75rem" }}>
-                          {ENTITY_TYPE_OPTIONS
-                            .filter((t) => graphData.nodes.some((n: any) => n.type === t.value))
-                            .map((t) => (
-                              <div key={t.value} style={{ display: "flex", alignItems: "center", gap: "0.25rem", fontSize: "0.6875rem" }}>
-                                <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: t.color }} />
-                                <span style={{ color: "#64748b" }}>{t.label}</span>
+              </>
+            )}
+
+            {/* Relations Knowledge Graph view */}
+            {viewMode === "relgraph" && result?.relations && (
+              <div className="medical-card" style={{ padding: "1.25rem" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.875rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <span style={{ fontSize: "1.125rem" }}>🕸️</span>
+                    <h3 style={{ margin: 0, fontSize: "0.9375rem", fontWeight: "600", color: "#0f172a" }}>
+                      Relations Knowledge Graph
+                    </h3>
+                  </div>
+                  <span style={{ fontSize: "0.75rem", color: "#64748b" }}>
+                    {relGraphData.nodes.length} nodes · {relGraphData.links.length} relations
+                  </span>
+                </div>
+
+                {relGraphData.nodes.length > 0 ? (
+                  <>
+                    {/* 3-row legend */}
+                    <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem", marginBottom: "0.875rem", padding: "0.625rem 0.875rem", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0" }}>
+                      {/* Row 1: Entity types */}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
+                        <span style={{ fontSize: "0.6875rem", fontWeight: "700", color: "#475569", minWidth: "3.75rem" }}>Entities</span>
+                        {ENTITY_TYPE_OPTIONS
+                          .filter((t) => relGraphData.nodes.some((n: any) => n.type === t.value))
+                          .map((t) => (
+                            <div key={t.value} style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.6875rem" }}>
+                              <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: t.color, flexShrink: 0 }} />
+                              <span style={{ color: "#475569" }}>{t.label}</span>
+                            </div>
+                          ))}
+                      </div>
+                      {/* Row 2: Relation types */}
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
+                        <span style={{ fontSize: "0.6875rem", fontWeight: "700", color: "#475569", minWidth: "3.75rem" }}>Relations</span>
+                        {Array.from(new Set(relGraphData.links.map((l: any) => l.relation_type))).map((rel: any) => {
+                          const color = NER_RELATION_COLORS[rel] || "#7c3aed";
+                          return (
+                            <div key={rel} style={{ display: "flex", alignItems: "center", gap: "0.375rem", fontSize: "0.6875rem" }}>
+                              <svg width="20" height="7" viewBox="0 0 20 7">
+                                <line x1="0" y1="3.5" x2="13" y2="3.5" stroke={color} strokeWidth="2"/>
+                                <polygon points="13,1 20,3.5 13,6" fill={color}/>
+                              </svg>
+                              <span style={{ color: "#475569" }}>{rel}</span>
+                            </div>
+                          );
+                        })}
+                        <span style={{ fontSize: "0.6875rem", color: "#94a3b8" }}>(zoom ×2 to see labels)</span>
+                      </div>
+                      {/* Row 3: Assertion status (only when assertion is enabled) */}
+                      {relGraphData.nodes.some((n: any) => n.assertion) && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
+                          <span style={{ fontSize: "0.6875rem", fontWeight: "700", color: "#475569", minWidth: "3.75rem" }}>Assertion</span>
+                          {Object.entries(ASSERTION_COLORS)
+                            .filter(([status]) => relGraphData.nodes.some((n: any) => n.assertion === status))
+                            .map(([status, style]) => (
+                              <div key={status} style={{ display: "flex", alignItems: "center", gap: "0.3rem", fontSize: "0.6875rem" }}>
+                                <span style={{ width: "9px", height: "9px", borderRadius: "50%", background: style.color, border: `1.5px solid ${style.color}`, flexShrink: 0 }} />
+                                <span style={{ color: "#475569" }}>{status.charAt(0) + status.slice(1).toLowerCase()}</span>
                               </div>
                             ))}
+                          <span style={{ fontSize: "0.6875rem", color: "#94a3b8" }}>(dot = node border color)</span>
                         </div>
-                        <div style={{ border: "1px solid #e2e8f0", borderRadius: "8px", overflow: "hidden", background: "#fafbfc" }}>
-                          <ForceGraph2D
-                            ref={graphRef}
-                            graphData={graphData}
-                            width={700}
-                            height={500}
-                            nodeCanvasObject={paintNode}
-                            nodePointerAreaPaint={(node: any, color: string, ctx: CanvasRenderingContext2D) => {
-                              const fontSize = 12;
-                              ctx.font = `600 ${fontSize}px Inter, sans-serif`;
-                              const w = ctx.measureText(node.label || node.id).width + fontSize;
-                              ctx.fillStyle = color;
-                              ctx.fillRect(node.x - w / 2, node.y - fontSize, w, fontSize * 2);
-                            }}
-                            linkColor={() => "#cbd5e1"}
-                            linkWidth={(link: any) => Math.min(link.weight || 1, 5)}
-                            linkDirectionalParticles={0}
-                            cooldownTicks={100}
-                            d3AlphaDecay={0.04}
-                            d3VelocityDecay={0.3}
-                          />
-                        </div>
-                        <p style={{ fontSize: "0.6875rem", color: "#94a3b8", marginTop: "0.5rem", marginBottom: 0, textAlign: "center" }}>
-                          Entities are linked when they co-occur in the same sentence. Drag to rearrange, scroll to zoom.
-                        </p>
-                      </>
-                    ) : (
-                      <div style={{ padding: "2rem", textAlign: "center", color: "#94a3b8", fontSize: "0.875rem" }}>
-                        No co-occurrences found. Entities must appear together in the same sentence to form links.
-                      </div>
-                    )}
+                      )}
+                    </div>
+
+                    <div style={{ border: "1px solid #e2e8f0", borderRadius: "8px", overflow: "hidden", background: "#fafbfc" }}>
+                      <ForceGraph2D
+                        ref={relGraphRef}
+                        graphData={relGraphData}
+                        width={700}
+                        height={520}
+                        nodeCanvasObject={paintRelNode}
+                        nodePointerAreaPaint={(node: any, color: string, ctx: CanvasRenderingContext2D) => {
+                          const fontSize = 12;
+                          ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+                          const w = ctx.measureText(node.label || node.id).width + fontSize;
+                          ctx.fillStyle = color;
+                          ctx.fillRect(node.x - w / 2, node.y - fontSize, w, fontSize * 2);
+                        }}
+                        linkColor={(link: any) => NER_RELATION_COLORS[link.relation_type] || "#7c3aed"}
+                        linkWidth={2}
+                        linkDirectionalArrowLength={6}
+                        linkDirectionalArrowRelPos={1}
+                        linkDirectionalArrowColor={(link: any) => NER_RELATION_COLORS[link.relation_type] || "#7c3aed"}
+                        linkCanvasObjectMode={() => "after"}
+                        linkCanvasObject={(link: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
+                          if (globalScale < 2 || !link.relation_type) return;
+                          const start = link.source;
+                          const end = link.target;
+                          if (!start || !end || typeof start.x !== "number") return;
+                          const midX = (start.x + end.x) / 2;
+                          const midY = (start.y + end.y) / 2;
+                          const label = link.relation_type;
+                          const fontSize = Math.max(2, 7 / globalScale);
+                          ctx.font = `600 ${fontSize}px Inter, sans-serif`;
+                          const textWidth = ctx.measureText(label).width;
+                          const pad = fontSize * 0.35;
+                          const color = NER_RELATION_COLORS[label] || "#7c3aed";
+                          ctx.fillStyle = "rgba(255,255,255,0.92)";
+                          ctx.fillRect(midX - textWidth / 2 - pad, midY - fontSize / 2 - pad, textWidth + pad * 2, fontSize + pad * 2);
+                          ctx.textAlign = "center";
+                          ctx.textBaseline = "middle";
+                          ctx.fillStyle = color;
+                          ctx.fillText(label, midX, midY);
+                        }}
+                        cooldownTicks={120}
+                        d3AlphaDecay={0.03}
+                        d3VelocityDecay={0.25}
+                      />
+                    </div>
+                    <p style={{ fontSize: "0.6875rem", color: "#94a3b8", marginTop: "0.5rem", marginBottom: 0, textAlign: "center" }}>
+                      Directed graph of extracted entity relations. Drag to rearrange, scroll to zoom.
+                    </p>
+                  </>
+                ) : (
+                  <div style={{ padding: "2rem", textAlign: "center", color: "#94a3b8", fontSize: "0.875rem" }}>
+                    No relations extracted. Enable relation extraction and re-run.
                   </div>
                 )}
-              </>
+              </div>
             )}
           </div>
         </div>

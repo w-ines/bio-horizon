@@ -26,4 +26,8 @@ class NerExtractRequest(BaseModel):
         False,
         description="Enable assertion status detection (F2c): PRESENT, NEGATED, HYPOTHETICAL, HISTORICAL"
     )
+    enable_relations: bool = Field(
+        False,
+        description="Enable relation extraction (F2d): Upregulator, Downregulator, Agonist, Antagonist, Substrate"
+    )
     provider: Optional[str] = Field(None, description="NER backend: gliner or openmed")

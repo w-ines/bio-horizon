@@ -19,6 +19,7 @@ def _ensure_node(
     label: str,
     *,
     source: str = "",
+    job_id: str = "",
     confidence: Optional[float] = None,
 ) -> str:
     """Add or update a node. Returns the node id."""
@@ -27,6 +28,8 @@ def _ensure_node(
         G.nodes[nid]["frequency"] += 1
         if source and source not in G.nodes[nid]["sources"]:
             G.nodes[nid]["sources"].append(source)
+        if job_id and job_id not in G.nodes[nid].get("job_ids", []):
+            G.nodes[nid].setdefault("job_ids", []).append(job_id)
         if confidence is not None:
             prev = G.nodes[nid].get("confidence_max")
             if prev is None or confidence > prev:
@@ -38,6 +41,7 @@ def _ensure_node(
             entity_type=entity_type.upper(),
             frequency=1,
             sources=[source] if source else [],
+            job_ids=[job_id] if job_id else [],
             confidence_max=confidence,
         )
     return nid
@@ -49,6 +53,7 @@ def _ensure_edge(
     nid_b: str,
     *,
     source: str = "",
+    job_id: str = "",
     relation_type: str = "co_occurrence",
 ) -> None:
     """Add or update an edge between two nodes."""
@@ -60,6 +65,8 @@ def _ensure_edge(
         G.edges[a, b]["weight"] += 1
         if source and source not in G.edges[a, b]["sources"]:
             G.edges[a, b]["sources"].append(source)
+        if job_id and job_id not in G.edges[a, b].get("job_ids", []):
+            G.edges[a, b].setdefault("job_ids", []).append(job_id)
     else:
         G.add_edge(
             a,
@@ -67,6 +74,7 @@ def _ensure_edge(
             weight=1,
             relation_type=relation_type,
             sources=[source] if source else [],
+            job_ids=[job_id] if job_id else [],
         )
 
 
@@ -75,6 +83,7 @@ def add_ner_result_with_relations_to_graph(
     ner_result: Dict[str, Any],
     *,
     source: str = "",
+    job_id: str = "",
     semantic_triplets: Optional[List[Tuple[str, str, str]]] = None,
 ) -> nx.Graph:
     """Ingest a NER result into the graph using LLM semantic relation triplets.
@@ -102,7 +111,7 @@ def add_ner_result_with_relations_to_graph(
             if not text or not text.strip():
                 continue
             confidence = ent.get("confidence") if isinstance(ent, dict) else None
-            nid = _ensure_node(G, entity_type, text, source=source, confidence=confidence)
+            nid = _ensure_node(G, entity_type, text, source=source, job_id=job_id, confidence=confidence)
             node_ids.append(nid)
             text_to_nid[text.strip().lower()] = nid
 
@@ -111,7 +120,7 @@ def add_ner_result_with_relations_to_graph(
         nid_a = text_to_nid.get(subj_text.strip().lower())
         nid_b = text_to_nid.get(obj_text.strip().lower())
         if nid_a and nid_b and nid_a != nid_b:
-            _ensure_edge(G, nid_a, nid_b, source=source, relation_type=rel_type)
+            _ensure_edge(G, nid_a, nid_b, source=source, job_id=job_id, relation_type=rel_type)
 
     return G
 
@@ -127,6 +136,7 @@ def graph_to_snapshot(G: nx.Graph) -> KgSnapshot:
                 entity_type=data.get("entity_type", ""),
                 frequency=data.get("frequency", 1),
                 sources=data.get("sources", []),
+                job_ids=data.get("job_ids", []),
                 confidence_max=data.get("confidence_max"),
             )
         )
@@ -140,6 +150,7 @@ def graph_to_snapshot(G: nx.Graph) -> KgSnapshot:
                 weight=data.get("weight", 1),
                 relation_type=data.get("relation_type", "co_occurrence"),
                 sources=data.get("sources", []),
+                job_ids=data.get("job_ids", []),
             )
         )
 

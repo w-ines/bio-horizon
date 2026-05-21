@@ -29,6 +29,7 @@ def extract_from_text(
     entity_types: Optional[Iterable[str]] = None,
     custom_labels: Optional[Iterable[str]] = None,
     enable_assertion: bool = False,
+    enable_relations: bool = False,
     provider: Optional[str] = None,
 ) -> NerResult:
     """
@@ -54,43 +55,55 @@ def extract_from_text(
             # Use OpenMed zero-shot backend
             from ner.backends import openmed_zeroshot
             
-            return openmed_zeroshot.extract(
+            result = openmed_zeroshot.extract(
                 text,
                 custom_labels=custom_labels_list,
                 enable_assertion=enable_assertion,
             )
+            if enable_relations:
+                result = _enrich_with_relations(result, text)
+            return result
         
         elif p == "gliner":
             # Use GLiNER backend for zero-shot
             from ner.backends import gliner_backend
             
-            return gliner_backend.extract(
+            result = gliner_backend.extract(
                 text,
                 entity_types=None,
                 enable_assertion=enable_assertion,
                 custom_labels=custom_labels_list,
             )
+            if enable_relations:
+                result = _enrich_with_relations(result, text)
+            return result
     
     # F2a: Standard NER mode
     if p == "openmed":
         from ner.backends import openmed_backend
 
-        return openmed_backend.extract(
+        result = openmed_backend.extract(
             text, 
             entity_types=entity_types,
             enable_assertion=enable_assertion,
             is_custom=False,
         )
+        if enable_relations:
+            result = _enrich_with_relations(result, text)
+        return result
 
     if p == "gliner":
         from ner.backends import gliner_backend
 
-        return gliner_backend.extract(
+        result = gliner_backend.extract(
             text, 
             entity_types=entity_types,
             enable_assertion=enable_assertion,
             custom_labels=None,
         )
+        if enable_relations:
+            result = _enrich_with_relations(result, text)
+        return result
 
     return NerResult(
         entities={str(t).strip().upper(): [] for t in (entity_types or []) if str(t).strip()},
@@ -99,6 +112,49 @@ def extract_from_text(
         custom_labels=list(custom_labels) if custom_labels else None,
         assertion_enabled=enable_assertion,
     )
+
+
+def _enrich_with_relations(result: NerResult, text: str) -> NerResult:
+    """Add relation extraction to an existing NerResult."""
+    try:
+        from ner.backends.relation_bert import RelationClassifier, extract_relations
+
+        # Collect all entities with offsets (find positions if missing)
+        all_entities = []
+        text_lower = text.lower()
+        for etype, ents in result.entities.items():
+            for e in ents:
+                start = e.start
+                end = e.end
+                # If offsets missing, find entity in text
+                if start is None or end is None:
+                    idx = text_lower.find(e.text.lower())
+                    if idx == -1:
+                        continue
+                    start = idx
+                    end = idx + len(e.text)
+                all_entities.append({
+                    "text": e.text, "start": start,
+                    "end": end, "type": etype,
+                })
+
+        if len(all_entities) < 2:
+            return result
+
+        relations = extract_relations(all_entities, text, min_confidence=0.5)
+        rel_tuples = [(e1, rel, e2) for e1, rel, e2, _ in relations]
+
+        return NerResult(
+            entities=result.entities,
+            provider=result.provider,
+            error=result.error,
+            custom_labels=result.custom_labels,
+            assertion_enabled=result.assertion_enabled,
+            relations=rel_tuples,
+        )
+    except Exception as e:
+        print(f"[relation] error: {e}")
+        return result
 
 
 def extract_from_article(

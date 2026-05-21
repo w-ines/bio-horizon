@@ -33,19 +33,25 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """You are Bio-Horizon, an intelligent biomedical research assistant.
 You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately to find the answer. NEVER ask the user to reformulate or search themselves.
 
+## Tool selection guide
+- **pubmed_search**: Quick lookup, returns max 10 articles. Use for simple factual questions.
+- **create_corpus_ingestion_job**: Bulk ingestion of hundreds/thousands of articles with NER + Knowledge Graph. Use when user says "ingest", "analyze corpus", "build KG", "analyze all literature". Do NOT use pubmed_search for bulk tasks.
+- **check_ingestion_job_status**: Check progress of a running ingestion job.
+- **search_ingested_articles**: Search articles that were already ingested.
+- **retrieve_knowledge**: Search uploaded documents and the Knowledge Graph.
+
 ## Workflow
-1. **Simple question** about a biomedical topic: call pubmed_search to get recent articles, then synthesize a clear answer.
-2. **Large-scale analysis** ("analyze all literature", "ingest corpus"): call create_corpus_ingestion_job with processing_mode="full" (NER+KG via PubTator3, ~1-3 min).
-3. **Explore ingested data**: call search_ingested_articles after a job completes.
-4. **Local knowledge**: call retrieve_knowledge to search uploaded documents and Knowledge Graph.
-5. **Check job progress**: call check_ingestion_job_status with the job_id.
+1. **Simple question**: ONE call to pubmed_search → synthesize answer.
+2. **Large-scale ingestion**: ONE call to create_corpus_ingestion_job → report job_id to user.
+3. **Signal/trend detection**: pubmed_search + retrieve_knowledge → synthesize findings.
 
 ## Rules
 - ALWAYS answer in English by default, unless the user explicitly requests another language.
 - Cite sources with [PMID: ...] format.
 - Be precise: medical information requires accuracy.
 - Never say "I couldn't find information" without having attempted at least one tool call.
-- If a tool returns no results, rephrase the query and retry once."""
+- If a tool returns no results, rephrase the query and retry once.
+- If a TASK PLAN is provided, follow it strictly."""
 
 # Maximum iterations for the tool-calling loop
 MAX_ITERATIONS = 7
@@ -120,6 +126,54 @@ def _get_llm():
 # Graph nodes
 # ---------------------------------------------------------------------------
 
+def _sanitize_messages(messages: List) -> List:
+    """Remove orphan tool_calls that have no matching ToolMessage response.
+
+    OpenAI requires that every AIMessage with tool_calls is immediately
+    followed by ToolMessages for each call_id. If a previous turn was
+    interrupted, the history may contain orphan tool_calls. We strip them
+    to avoid 400 errors.
+    """
+    sanitized = []
+    i = 0
+    while i < len(messages):
+        msg = messages[i]
+
+        # Check if this is an AIMessage with tool_calls
+        if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
+            expected_ids = {tc["id"] for tc in msg.tool_calls if "id" in tc}
+
+            # Collect all ToolMessages that immediately follow
+            j = i + 1
+            found_ids = set()
+            while j < len(messages) and isinstance(messages[j], ToolMessage):
+                tid = getattr(messages[j], "tool_call_id", None)
+                if tid:
+                    found_ids.add(tid)
+                j += 1
+
+            # If all tool_call_ids are answered, keep the block intact
+            if expected_ids <= found_ids:
+                sanitized.append(msg)
+            else:
+                # Strip orphan tool_calls — replace with plain AIMessage
+                logger.warning(
+                    f"Sanitizing orphan tool_calls: expected {expected_ids}, found {found_ids}"
+                )
+                # Keep just the text content (if any) as a regular AIMessage
+                text_content = msg.content or ""
+                if text_content:
+                    sanitized.append(AIMessage(content=text_content))
+                # Skip the partial ToolMessages that follow
+                i = j
+                continue
+        else:
+            sanitized.append(msg)
+        i += 1
+
+    return sanitized
+
+
 def agent_node(state: BioHorizonState) -> Dict[str, Any]:
     """Call the LLM (with bound tools). It decides whether to use tools or answer."""
     llm = _get_llm()
@@ -129,6 +183,9 @@ def agent_node(state: BioHorizonState) -> Dict[str, Any]:
     # Inject system prompt if not already present
     if not messages or not isinstance(messages[0], SystemMessage):
         messages.insert(0, SystemMessage(content=SYSTEM_PROMPT))
+
+    # Sanitize: remove orphan tool_calls without matching ToolMessages
+    messages = _sanitize_messages(messages)
 
     # Emit streaming event
     step_count = sum(1 for m in messages if isinstance(m, ToolMessage))

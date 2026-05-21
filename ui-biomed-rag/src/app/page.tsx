@@ -80,6 +80,20 @@ const TOOLS = [
     ),
   },
   {
+    href: "/jobs",
+    label: "Corpus Ingestion",
+    subtitle: "Job Management",
+    description: "Launch and monitor large-scale PubMed ingestion jobs with NER and Knowledge Graph integration. Track progress in real time.",
+    accent: "#f97316",
+    accentSoft: "rgba(249, 115, 22, 0.08)",
+    icon: (
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="2" y="3" width="20" height="14" rx="2" ry="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" />
+        <polyline points="7 8 10 11 13 8 17 12" />
+      </svg>
+    ),
+  },
+  {
     href: "/ner",
     label: "NER Entities",
     subtitle: "Entity Extraction",

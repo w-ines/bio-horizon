@@ -4,11 +4,22 @@ import os
 import json
 import uuid
 import asyncio
+import logging
+from collections import defaultdict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ---------------------------------------------------------------------------
+# Per-conversation lock to prevent concurrent agent executions.
+# If the agent is already processing conversation X, a second request on X
+# will get a 429 instead of corrupting the message history.
+# ---------------------------------------------------------------------------
+
+_conversation_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
 
 def _get_upload_tools():
@@ -59,7 +70,8 @@ def _build_deep_agent_stream(query: str, conversation_id: str = None):
                 # Build input messages: history + current query
                 input_messages = history_messages + [HumanMessage(content=query)]
 
-                config = {"configurable": {"thread_id": conv_id}}
+                import uuid as _uuid
+                config = {"configurable": {"thread_id": f"{conv_id}_{_uuid.uuid4().hex[:8]}"}}
 
                 # Stream node-by-node events from LangGraph
                 for event in graph.stream(
@@ -251,9 +263,28 @@ The uploaded document(s) are now in the vector database. Use the retrieve_knowle
 
         print(f"[ask] delegating to agent with query (length={len(agent_query)})")
 
-        # STEP 3: Stream Deep Agent response
+        # STEP 3: Acquire per-conversation lock (prevent concurrent runs)
+        conv_key = conversation_id or "default"
+        lock = _conversation_locks[conv_key]
+
+        if lock.locked():
+            logger.warning(f"[ask] Conversation {conv_key} is already processing a request")
+            return JSONResponse(
+                {
+                    "answer": "⏳ Une requête est déjà en cours sur cette conversation. Veuillez patienter.",
+                    "status": "busy",
+                },
+                status_code=429,
+            )
+
+        # STEP 4: Stream Deep Agent response (under lock)
+        async def _locked_stream():
+            async with lock:
+                async for chunk in _build_deep_agent_stream(agent_query, conversation_id):
+                    yield chunk
+
         return StreamingResponse(
-            _build_deep_agent_stream(agent_query, conversation_id),
+            _locked_stream(),
             media_type="application/x-ndjson",
             headers={
                 "Cache-Control": "no-cache",

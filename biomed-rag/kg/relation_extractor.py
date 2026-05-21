@@ -1,16 +1,17 @@
-"""LLM-based semantic relation extractor for the Knowledge Graph.
+"""Semantic relation extractor for the Knowledge Graph.
 
-Uses OpenRouter (OpenAI-compatible API) to classify semantic relations
-between entity pairs found in biomedical article abstracts.
+Supports two backends:
+  - **bert**: Local PubMedBERT model (wesin/pubmedbert-relation-extraction).
+    Fast, no API key needed, runs on CPU/GPU. One forward pass per entity pair.
+  - **llm**: OpenRouter (OpenAI-compatible API) with GPT-4o-mini.
+    One call per article, requires API key.
 
-Strategy:
-  - One LLM call per article (not per entity pair) to keep cost low.
-  - Abstract text + entity list → JSON triplets.
-  - Returns a structured dict with status/reason for full debuggability.
+Backend selection: env var RELATION_BACKEND=bert|llm (default: bert).
 
 Supported relation types:
   treats, inhibits, activates, causes, associated_with,
-  expressed_in, binds, predisposes, cotreatment, converts
+  expressed_in, binds, predisposes, cotreatment, converts,
+  interacts_with, located_in
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ RELATION_TYPES = {
     "predisposes",
     "cotreatment",
     "converts",
+    "interacts_with",
+    "located_in",
 }
 
 # Timeout for the LLM HTTP call (seconds).
@@ -101,7 +104,118 @@ def _error(reason: str, raw: str = "") -> RelationExtractionResult:
 
 
 # ─────────────────────────────────────────────────────────────
-# Main extraction function
+# BERT-based extraction (local model)
+# ─────────────────────────────────────────────────────────────
+
+_bert_classifier = None  # singleton
+
+
+def _get_bert_classifier():
+    """Lazy-load the BERT relation classifier (singleton)."""
+    global _bert_classifier
+    if _bert_classifier is None:
+        from ner.backends.relation_bert import RelationClassifier
+        logger.info("[relation_extractor] Loading PubMedBERT relation model...")
+        _bert_classifier = RelationClassifier()
+        logger.info("[relation_extractor] PubMedBERT relation model loaded.")
+    return _bert_classifier
+
+
+def extract_relations_bert(
+    abstract: str,
+    entities: Dict[str, List[Any]],
+    *,
+    min_confidence: float = 0.5,
+    max_pairs: int = 100,
+) -> RelationExtractionResult:
+    """Extract relations using the local PubMedBERT model.
+
+    Iterates over all entity pairs, inserts [E1]/[E2] markers,
+    and classifies each pair. Much faster than LLM for small entity counts
+    and requires no API key.
+
+    Args:
+        abstract: Article abstract text.
+        entities: Dict of {entity_type: [{"text": ..., "start": ..., "end": ...}, ...]}.
+        min_confidence: Minimum confidence to accept a relation.
+        max_pairs: Cap on number of pairs to classify (avoids O(n²) explosion).
+
+    Returns:
+        RelationExtractionResult with .triplets and debug metadata.
+    """
+    if not abstract or not abstract.strip():
+        return RelationExtractionResult([], backend="bert", status="skipped", reason="abstract_empty")
+
+    # Flatten entities with positions
+    flat_entities: List[Dict[str, Any]] = []
+    text_lower = abstract.lower()
+    for entity_type, items in entities.items():
+        for ent in (items or []):
+            if isinstance(ent, dict):
+                text = (ent.get("text") or "").strip()
+                start = ent.get("start")
+                end = ent.get("end")
+            else:
+                text = str(ent).strip()
+                start = None
+                end = None
+            if not text:
+                continue
+            # Find offset if missing
+            if start is None or end is None:
+                idx = text_lower.find(text.lower())
+                if idx == -1:
+                    continue
+                start = idx
+                end = idx + len(text)
+            flat_entities.append({"text": text, "start": start, "end": end, "type": entity_type})
+
+    if len(flat_entities) < 2:
+        return RelationExtractionResult(
+            [], backend="bert", status="skipped",
+            reason=f"too_few_entities ({len(flat_entities)})",
+        )
+
+    try:
+        classifier = _get_bert_classifier()
+    except Exception as exc:
+        logger.error("[relation_extractor] Failed to load BERT model: %s", exc)
+        return RelationExtractionResult([], backend="bert", status="error", reason=f"model_load_error: {exc}")
+
+    # Generate pairs (capped)
+    from itertools import combinations
+    pairs = list(combinations(flat_entities, 2))[:max_pairs]
+
+    results: List[Tuple[str, str, str]] = []
+    for ent1, ent2 in pairs:
+        try:
+            pred = classifier.predict(
+                abstract,
+                (ent1["start"], ent1["end"]),
+                (ent2["start"], ent2["end"]),
+            )
+        except Exception:
+            continue
+
+        label = pred["label"]
+        confidence = pred["confidence"]
+        if label != "NO_RELATION" and confidence >= min_confidence:
+            results.append((ent1["text"], label, ent2["text"]))
+
+    logger.debug(
+        "[relation_extractor] BERT: %d triplets from %d pairs (min_conf=%.2f)",
+        len(results), len(pairs), min_confidence,
+    )
+    return RelationExtractionResult(
+        results,
+        backend="bert",
+        status="ok",
+        reason=f"{len(results)}_triplets_from_{len(pairs)}_pairs",
+    )
+
+
+# ─────────────────────────────────────────────────────────────
+# LLM-based extraction (OpenRouter)
 # ─────────────────────────────────────────────────────────────
 
 def extract_relations_llm(
@@ -236,3 +350,49 @@ def extract_relations_llm(
         rejected_labels=list(set(rejected)),
         raw_content=raw_content[:500],
     )
+
+
+# ─────────────────────────────────────────────────────────────
+# Dispatcher (selects backend from env)
+# ─────────────────────────────────────────────────────────────
+
+def extract_relations(
+    abstract: str,
+    entities: Dict[str, List[Any]],
+    *,
+    backend: Optional[str] = None,
+    min_confidence: float = 0.5,
+    max_pairs: int = 100,
+) -> RelationExtractionResult:
+    """Extract relations using the configured backend.
+
+    Backend is selected from the `backend` arg, or env var RELATION_BACKEND.
+    Defaults to 'bert' (wesin/pubmedbert-relation-extraction).
+
+    Args:
+        abstract: Article abstract text.
+        entities: Dict of {entity_type: [{"text": ..., ...}, ...]}.
+        backend: 'bert' or 'llm'. Overrides env var.
+        min_confidence: Minimum confidence (BERT only).
+        max_pairs: Max entity pairs to classify (BERT only).
+
+    Returns:
+        RelationExtractionResult with .triplets and debug metadata.
+    """
+    chosen = (backend or os.getenv("RELATION_BACKEND", "bert")).strip().lower()
+
+    if chosen == "bert":
+        return extract_relations_bert(
+            abstract, entities,
+            min_confidence=min_confidence,
+            max_pairs=max_pairs,
+        )
+    elif chosen == "llm":
+        return extract_relations_llm(abstract, entities)
+    else:
+        logger.warning("[relation_extractor] Unknown backend '%s', falling back to bert", chosen)
+        return extract_relations_bert(
+            abstract, entities,
+            min_confidence=min_confidence,
+            max_pairs=max_pairs,
+        )

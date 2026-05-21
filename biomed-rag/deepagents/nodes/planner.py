@@ -46,34 +46,35 @@ class TaskPlan(BaseModel):
 INGEST_PLANNER_PROMPT = """You are a research planning assistant.
 The user wants to perform a large-scale corpus analysis. Create a concrete plan.
 
+CRITICAL: For bulk ingestion, the agent MUST use create_corpus_ingestion_job.
+Do NOT plan multiple pubmed_search calls — pubmed_search only returns 10 articles.
+
 Available tools:
-- pubmed_search: Search PubMed for articles
-- create_corpus_ingestion_job: Launch a background job to ingest articles (NER + KG)
-- check_ingestion_job_status: Check progress of an ingestion job
-- search_ingested_articles: Search already ingested articles
-- retrieve_knowledge: Search the Knowledge Graph and vector store
+- create_corpus_ingestion_job(query, max_batches, processing_mode): Launch bulk ingestion (NER + KG). This is the PRIMARY tool for ingest tasks.
+- check_ingestion_job_status(job_id): Check progress of an ingestion job
+- search_ingested_articles(query): Search already ingested articles
+- retrieve_knowledge(query): Search the Knowledge Graph and vector store
+- pubmed_search(query): Quick search, returns only 10 articles. NOT for bulk ingestion.
 
-Typical plan:
-1. Use pubmed_search to estimate the corpus size
-2. Use create_corpus_ingestion_job to launch the ingestion pipeline
-3. Monitor with check_ingestion_job_status
-4. Once complete, use search_ingested_articles to explore results
+The plan MUST:
+1. Call create_corpus_ingestion_job with the user's query as first step
+2. Optionally check status with check_ingestion_job_status
+3. Summarize what was launched
 
-Create a plan with 2-5 steps. Be specific to the user's query."""
+Create a plan with 2-3 steps. Be specific to the user's query."""
 
 SIGNAL_PLANNER_PROMPT = """You are a research planning assistant.
 The user wants to detect emerging signals or trends. Create a concrete plan.
 
 Available tools:
-- pubmed_search: Search PubMed for recent articles
-- retrieve_knowledge: Search the Knowledge Graph for entity relationships
-- search_ingested_articles: Search previously ingested articles
+- pubmed_search(query): Search PubMed for recent articles (returns 10 max)
+- retrieve_knowledge(query): Search the Knowledge Graph for entity relationships
+- search_ingested_articles(query): Search previously ingested articles
 
-Typical plan:
-1. Search PubMed for recent articles on the topic
-2. Query the Knowledge Graph for related entities
-3. Analyze temporal patterns and synthesize findings
-4. Report on emerging, accelerating, or declining signals
+The plan MUST:
+1. Use pubmed_search to get recent articles on the topic (ONE call is enough)
+2. Use retrieve_knowledge to query the Knowledge Graph for entity connections
+3. Synthesize findings: compare new articles vs existing KG data to identify signals
 
 Create a plan with 2-4 steps. Be specific to the user's query."""
 
@@ -144,11 +145,13 @@ def planner_node(state: BioHorizonState) -> Dict[str, Any]:
             HumanMessage(content=user_msg),
         ])
 
-        # Format plan as a message the agent will follow
-        plan_text = f"## Task Plan\n**Goal:** {plan.summary}\n\n"
+        # Format plan as a directive the agent MUST follow
+        plan_text = f"## TASK PLAN — YOU MUST FOLLOW THIS PLAN\n**Goal:** {plan.summary}\n\n"
         for i, step in enumerate(plan.steps, 1):
             plan_text += f"{i}. {step}\n"
-        plan_text += "\nFollow this plan step by step. Use tools as indicated."
+        if route == "ingest":
+            plan_text += "\n⚠️ IMPORTANT: Use create_corpus_ingestion_job for bulk ingestion. Do NOT call pubmed_search repeatedly."
+        plan_text += "\nFollow this plan step by step. Use the exact tools mentioned above."
 
         logger.info("[planner] Generated %d-step plan for route '%s': %s", len(plan.steps), route, plan.summary)
 

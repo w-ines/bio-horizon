@@ -127,18 +127,60 @@ def detect_assertion_heuristic(text: str, entity_text: str) -> str:
     return "PRESENT"
 
 
+def detect_assertion_bert(text: str, entity_text: str, entity_start: int = None, entity_end: int = None) -> str:
+    """Detect assertion using fine-tuned PubMedBERT model.
+    
+    Args:
+        text: Full text context
+        entity_text: Entity to qualify
+        entity_start: Start position of entity in text (optional)
+        entity_end: End position of entity in text (optional)
+    
+    Returns:
+        PRESENT, NEGATED, HYPOTHETICAL, or HISTORICAL
+    """
+    try:
+        from ner.backends.assertion_bert import AssertionClassifier
+        
+        # Lazy-load singleton
+        if not hasattr(detect_assertion_bert, "_classifier"):
+            model_path = _env("ASSERTION_MODEL_PATH", "models/assertion-pubmedbert")
+            detect_assertion_bert._classifier = AssertionClassifier(model_path)
+        
+        # Determine entity span
+        if entity_start is None or entity_end is None:
+            entity_start = text.lower().find(entity_text.lower())
+            if entity_start == -1:
+                return detect_assertion_heuristic(text, entity_text)
+            entity_end = entity_start + len(entity_text)
+        
+        result = detect_assertion_bert._classifier.predict(text, (entity_start, entity_end))
+        return result["label"]
+    
+    except Exception:
+        return detect_assertion_heuristic(text, entity_text)
+
+
 def detect_assertion(
     text: str,
     entity_text: str,
+    entity_start: int = None,
+    entity_end: int = None,
+    use_bert: bool = None,
     use_openmed: bool = False,
     model_name: str = "assertion_detection_superclinical"
 ) -> str:
     """Detect assertion status for an entity.
     
+    Priority chain: BERT (fine-tuned) → OpenMed → Heuristics
+    
     Args:
         text: Full text context
         entity_text: Entity to qualify
-        use_openmed: Whether to try OpenMed model first
+        entity_start: Start position of entity in text (optional)
+        entity_end: End position of entity in text (optional)
+        use_bert: Whether to use fine-tuned PubMedBERT (default: from env)
+        use_openmed: Whether to try OpenMed model
         model_name: OpenMed assertion model name
     
     Returns:
@@ -157,7 +199,13 @@ def detect_assertion(
         >>> detect_assertion("Patient presents with fever", "fever")
         'PRESENT'
     """
-    if use_openmed:
+    # Default: use BERT if ASSERTION_MODEL_PATH is set
+    if use_bert is None:
+        use_bert = bool(_env("ASSERTION_MODEL_PATH"))
+    
+    if use_bert:
+        return detect_assertion_bert(text, entity_text, entity_start, entity_end)
+    elif use_openmed:
         return detect_assertion_openmed(text, entity_text, model_name)
     else:
         return detect_assertion_heuristic(text, entity_text)

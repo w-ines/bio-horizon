@@ -13,6 +13,7 @@ class KgNode:
     entity_type: str
     frequency: int = 1
     sources: List[str] = field(default_factory=list)
+    job_ids: List[str] = field(default_factory=list)
     confidence_max: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
@@ -23,6 +24,7 @@ class KgNode:
             "entity_type": self.entity_type,
             "frequency": self.frequency,
             "sources": self.sources,
+            "job_ids": self.job_ids,
             "confidence_max": self.confidence_max,
             "metadata": self.metadata,
         }
@@ -37,6 +39,7 @@ class KgEdge:
     weight: int = 1
     relation_type: str = "co_occurrence"
     sources: List[str] = field(default_factory=list)
+    job_ids: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -46,6 +49,7 @@ class KgEdge:
             "weight": self.weight,
             "relation_type": self.relation_type,
             "sources": self.sources,
+            "job_ids": self.job_ids,
             "metadata": self.metadata,
         }
 

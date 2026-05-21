@@ -19,6 +19,7 @@ def _node_to_payload(node: KgNode) -> Dict[str, Any]:
         "entity_type": node.entity_type,
         "frequency": node.frequency,
         "sources": node.sources or [],
+        "job_ids": node.job_ids or [],
         "confidence_max": node.confidence_max,
         "metadata": node.metadata or {},
     }
@@ -87,6 +88,7 @@ def _edge_to_payload(edge: KgEdge) -> Dict[str, Any]:
         "weight": edge.weight,
         "relation_type": edge.relation_type,
         "sources": edge.sources or [],
+        "job_ids": edge.job_ids or [],
         "metadata": edge.metadata or {},
     }
 

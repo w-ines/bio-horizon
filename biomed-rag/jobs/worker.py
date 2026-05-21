@@ -73,6 +73,16 @@ class IngestWorker:
             # Step 2: Process batches
             await self._process_batches(job)
             
+            # Step 3: Save per-job KG snapshot for temporal comparison
+            try:
+                from kg.snapshots import save_job_snapshot
+                from core_tools.kg_tool import get_graph
+                graph = get_graph()
+                if graph.number_of_nodes() > 0:
+                    save_job_snapshot(graph, job.job_id, job.query)
+            except Exception as e:
+                logger.warning(f"⚠️  Job snapshot save failed (non-fatal): {e}")
+            
             # Mark as completed
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.utcnow()
@@ -369,10 +379,11 @@ class IngestWorker:
         logger.info(f"✅ Extracted {entities_count} entities from {len(articles)} articles")
         
         # Step 3: Add to in-memory KG with semantic relations (no DB write yet).
-        # PubTator3 relations are used if available; otherwise LLM fallback.
+        # PubTator3 relations are used if available; otherwise BERT fallback
+        # (wesin/pubmedbert-relation-extraction). Set RELATION_BACKEND=llm for LLM.
         # Persistence happens once at end of job in _process_batches.
         if entities_count > 0:
-            from kg.relation_extractor import extract_relations_llm
+            from kg.relation_extractor import extract_relations
 
             graph = get_graph()
             article_map = {a.get("pmid", ""): a for a in articles if a.get("pmid")}
@@ -385,14 +396,14 @@ class IngestWorker:
                 re_status = "ok" if triplets else "n/a"
                 re_reason = f"{len(triplets)}_pubtator3" if triplets else ""
 
-                # LLM fallback when no relations found (regardless of provider)
+                # BERT/LLM fallback when no relations found (regardless of provider)
                 if not triplets:
                     abstract = article_map.get(source, {}).get("abstract", "")
                     entities = r.get("entities", {})
                     if abstract and entities:
                         result = await loop.run_in_executor(
                             None,
-                            lambda ab=abstract, ent=entities: extract_relations_llm(ab, ent),
+                            lambda ab=abstract, ent=entities: extract_relations(ab, ent),
                         )
                         triplets = result.triplets
                         re_backend = result.backend
@@ -410,7 +421,7 @@ class IngestWorker:
 
                 semantic_count += len(triplets)
                 build.add_ner_result_with_relations_to_graph(
-                    graph, r, source=source, semantic_triplets=triplets or None
+                    graph, r, source=source, job_id=job.job_id, semantic_triplets=triplets or None
                 )
 
             logger.info(

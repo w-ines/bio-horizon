@@ -20,7 +20,8 @@ async def kg_stats():
 async def kg_graph(
     entity_type: str = None,
     max_nodes: int = 100,
-    min_frequency: int = 1
+    min_frequency: int = 1,
+    job_ids: str = None,
 ):
     """
     Returns Knowledge Graph in node-link format for visualization.
@@ -29,12 +30,22 @@ async def kg_graph(
     - entity_type: Filter by entity type (DRUG, DISEASE, GENE, etc.)
     - max_nodes: Maximum number of nodes to return (default: 100)
     - min_frequency: Minimum frequency for nodes (default: 1)
+    - job_ids: Comma-separated job IDs to filter by (only show nodes/edges from these jobs)
     """
     try:
         from core_tools.kg_tool import get_graph
         import networkx as nx
         
         G = get_graph()
+        
+        # Filter by job_ids if specified
+        if job_ids:
+            selected_jobs = {j.strip() for j in job_ids.split(",") if j.strip()}
+            nodes_to_keep = [
+                n for n, d in G.nodes(data=True)
+                if selected_jobs & set(d.get('job_ids') or [])
+            ]
+            G = G.subgraph(nodes_to_keep).copy()
         
         # Filter by entity type if specified
         if entity_type:
@@ -74,6 +85,7 @@ async def kg_graph(
                 "degree": G.degree(node_id),
                 "sources": sources[:20],
                 "source_count": len(sources),
+                "job_ids": data.get('job_ids', []),
             })
         
         links = []
@@ -86,6 +98,7 @@ async def kg_graph(
                 "relation_type": data.get('relation_type', 'co_occurrence'),
                 "sources": sources[:20],
                 "source_count": len(sources),
+                "job_ids": data.get('job_ids', []),
             })
         
         return {
@@ -94,7 +107,8 @@ async def kg_graph(
             "stats": {
                 "total_nodes": G.number_of_nodes(),
                 "total_edges": G.number_of_edges(),
-                "filtered": entity_type is not None or min_frequency > 1
+                "filtered": entity_type is not None or min_frequency > 1 or job_ids is not None,
+                "job_ids_filter": job_ids.split(",") if job_ids else None,
             }
         }
     
