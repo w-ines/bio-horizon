@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import { useRagStore } from "@/stores/ragStore";
 import SearchForm from "@/features/rag/components/SearchForm";
 import { AgentStepsProvider } from "@/features/rag/hooks/use-agent-steps";
 import { linkifyText } from "@/lib/linkify";
@@ -20,18 +21,13 @@ type AgentStep = {
 };
 
 export default function RagPageContent() {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [currentSteps, setCurrentSteps] = useState<AgentStep[]>([]);
+  const {
+    messages, addMessage, setMessages,
+    currentSteps, setCurrentSteps, addStep,
+    conversationId, setConversationId,
+    clearConversation,
+  } = useRagStore();
   const [loading, setLoading] = useState(false);
-  const [conversationId, setConversationId] = useState(() => {
-    if (typeof window !== "undefined") {
-      const stored = localStorage.getItem("bio_horizon_conversation_id");
-      if (stored) return stored;
-    }
-    const newId = `rag_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    if (typeof window !== "undefined") localStorage.setItem("bio_horizon_conversation_id", newId);
-    return newId;
-  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll vers le bas quand de nouveaux messages arrivent
@@ -46,7 +42,7 @@ export default function RagPageContent() {
       content: userQuery,
       timestamp: new Date(),
     };
-    setMessages(prev => [...prev, userMsg]);
+    addMessage(userMsg);
   }
 
   function handleAssistantResponse(assistantResponse: string) {
@@ -56,7 +52,7 @@ export default function RagPageContent() {
       content: assistantResponse,
       timestamp: new Date(),
     };
-    setMessages(prev => [...prev, assistantMsg]);
+    addMessage(assistantMsg);
     setCurrentSteps([]); // Clear steps after message is complete
   }
 
@@ -73,15 +69,13 @@ export default function RagPageContent() {
       preview: preview,
       timestamp: new Date(),
     };
-    setCurrentSteps(prev => [...prev, stepObj]);
+    addStep(stepObj);
   }
 
   function startNewChat() {
     const newId = `rag_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     setConversationId(newId);
-    if (typeof window !== "undefined") localStorage.setItem("bio_horizon_conversation_id", newId);
-    setMessages([]);
-    setCurrentSteps([]);
+    clearConversation();
   }
 
   function clearChat() {

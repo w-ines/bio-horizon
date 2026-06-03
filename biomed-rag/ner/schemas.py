@@ -14,6 +14,8 @@ class NerEntity:
     end: Optional[int] = None
     assertion_status: Optional[str] = None  # PRESENT, NEGATED, HYPOTHETICAL, HISTORICAL
     label: Optional[str] = None  # Entity type label
+    concept_id: Optional[str] = None  # Canonical ID, e.g. "MESH:D009369", "NCBIGene:673"
+    concept_source: Optional[str] = None  # Vocabulary, e.g. "MeSH", "NCBIGene", "NCBITaxon"
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -28,6 +30,10 @@ class NerEntity:
             out["assertion_status"] = self.assertion_status
         if self.label is not None:
             out["label"] = self.label
+        if self.concept_id is not None:
+            out["concept_id"] = self.concept_id
+        if self.concept_source is not None:
+            out["concept_source"] = self.concept_source
         return out
 
 

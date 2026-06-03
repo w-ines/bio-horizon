@@ -21,9 +21,18 @@ def _ensure_node(
     source: str = "",
     job_id: str = "",
     confidence: Optional[float] = None,
+    concept_id: Optional[str] = None,
+    concept_source: Optional[str] = None,
 ) -> str:
-    """Add or update a node. Returns the node id."""
-    nid = make_node_id(entity_type, label)
+    """Add or update a node. Returns the node id.
+
+    Entity resolution: when ``concept_id`` is supplied (e.g. a MeSH or NCBI
+    Gene id), the node identity is the canonical id, so different surface forms
+    of the same concept collapse into a single node. The original surface forms
+    are preserved in ``metadata['aliases']`` for traceability.
+    """
+    nid = make_node_id(entity_type, label, concept_id)
+    surface = normalize_entity_text(label)
     if G.has_node(nid):
         G.nodes[nid]["frequency"] += 1
         if source and source not in G.nodes[nid]["sources"]:
@@ -34,15 +43,28 @@ def _ensure_node(
             prev = G.nodes[nid].get("confidence_max")
             if prev is None or confidence > prev:
                 G.nodes[nid]["confidence_max"] = confidence
+        # Backfill the canonical id if a later mention resolves a node that was
+        # first seen without one.
+        if concept_id and not G.nodes[nid].get("concept_id"):
+            G.nodes[nid]["concept_id"] = concept_id
+            G.nodes[nid]["concept_source"] = concept_source
+        # Track every distinct surface form behind this canonical entity.
+        meta = G.nodes[nid].setdefault("metadata", {})
+        aliases = meta.setdefault("aliases", [])
+        if surface and surface not in aliases:
+            aliases.append(surface)
     else:
         G.add_node(
             nid,
-            label=normalize_entity_text(label),
+            label=surface,
             entity_type=entity_type.upper(),
             frequency=1,
             sources=[source] if source else [],
             job_ids=[job_id] if job_id else [],
             confidence_max=confidence,
+            concept_id=concept_id,
+            concept_source=concept_source,
+            metadata={"aliases": [surface] if surface else []},
         )
     return nid
 
@@ -111,7 +133,13 @@ def add_ner_result_with_relations_to_graph(
             if not text or not text.strip():
                 continue
             confidence = ent.get("confidence") if isinstance(ent, dict) else None
-            nid = _ensure_node(G, entity_type, text, source=source, job_id=job_id, confidence=confidence)
+            concept_id = ent.get("concept_id") if isinstance(ent, dict) else None
+            concept_source = ent.get("concept_source") if isinstance(ent, dict) else None
+            nid = _ensure_node(
+                G, entity_type, text,
+                source=source, job_id=job_id, confidence=confidence,
+                concept_id=concept_id, concept_source=concept_source,
+            )
             node_ids.append(nid)
             text_to_nid[text.strip().lower()] = nid
 
@@ -138,6 +166,9 @@ def graph_to_snapshot(G: nx.Graph) -> KgSnapshot:
                 sources=data.get("sources", []),
                 job_ids=data.get("job_ids", []),
                 confidence_max=data.get("confidence_max"),
+                concept_id=data.get("concept_id"),
+                concept_source=data.get("concept_source"),
+                metadata=data.get("metadata", {}),
             )
         )
 

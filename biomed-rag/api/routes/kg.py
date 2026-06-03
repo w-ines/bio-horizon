@@ -22,6 +22,8 @@ async def kg_graph(
     max_nodes: int = 100,
     min_frequency: int = 1,
     job_ids: str = None,
+    sort_by: str = "frequency",
+    min_bridge_score: float = 0.0,
 ):
     """
     Returns Knowledge Graph in node-link format for visualization.
@@ -31,12 +33,18 @@ async def kg_graph(
     - max_nodes: Maximum number of nodes to return (default: 100)
     - min_frequency: Minimum frequency for nodes (default: 1)
     - job_ids: Comma-separated job IDs to filter by (only show nodes/edges from these jobs)
+    - sort_by: Which metric decides which nodes survive the max_nodes cap
+      ("frequency" default, or "bridge" to prioritise cross-job bridges)
+    - min_bridge_score: Only keep nodes whose bridge score is >= this value
     """
     try:
-        from core_tools.kg_tool import get_graph
+        from core_tools.kg_tool import get_graph, get_bridge_scores
         import networkx as nx
         
         G = get_graph()
+        # Bridge scores are computed on the FULL graph so they reflect each
+        # node's global role across all jobs, regardless of the filters below.
+        bridge_scores = get_bridge_scores()
         
         # Filter by job_ids if specified
         if job_ids:
@@ -63,13 +71,21 @@ async def kg_graph(
             ]
             G = G.subgraph(nodes_to_keep).copy()
         
-        # Limit number of nodes (take top by frequency)
+        # Filter by minimum bridge score
+        if min_bridge_score > 0.0:
+            nodes_to_keep = [
+                n for n in G.nodes()
+                if bridge_scores.get(n, {}).get('bridge_score', 0.0) >= min_bridge_score
+            ]
+            G = G.subgraph(nodes_to_keep).copy()
+        
+        # Limit number of nodes (take top by the chosen metric)
         if G.number_of_nodes() > max_nodes:
-            nodes_sorted = sorted(
-                G.nodes(data=True),
-                key=lambda x: x[1].get('frequency', 0),
-                reverse=True
-            )
+            if sort_by == "bridge":
+                key_fn = lambda x: bridge_scores.get(x[0], {}).get('bridge_score', 0.0)
+            else:
+                key_fn = lambda x: x[1].get('frequency', 0)
+            nodes_sorted = sorted(G.nodes(data=True), key=key_fn, reverse=True)
             top_nodes = [n[0] for n in nodes_sorted[:max_nodes]]
             G = G.subgraph(top_nodes).copy()
         
@@ -77,6 +93,7 @@ async def kg_graph(
         nodes = []
         for node_id, data in G.nodes(data=True):
             sources = data.get('sources', [])
+            bs = bridge_scores.get(node_id, {})
             nodes.append({
                 "id": node_id,
                 "label": data.get('label', node_id),
@@ -86,6 +103,10 @@ async def kg_graph(
                 "sources": sources[:20],
                 "source_count": len(sources),
                 "job_ids": data.get('job_ids', []),
+                "bridge_score": bs.get('bridge_score', 0.0),
+                "job_count": bs.get('job_count', len(data.get('job_ids') or [])),
+                "neighbor_job_count": bs.get('neighbor_job_count', 0),
+                "betweenness": bs.get('betweenness', 0.0),
             })
         
         links = []
@@ -136,6 +157,24 @@ async def kg_top_nodes(n: int = 20, sort_by: str = "frequency"):
         return {"nodes": query_top_nodes(n=n, sort_by=sort_by)}
     except Exception as e:
         return {"error": str(e), "nodes": []}
+
+
+@router.get("/bridges")
+async def kg_bridges(n: int = 20, min_jobs: int = 2):
+    """Get the top bridge entities — nodes that connect multiple ingestion jobs.
+
+    Query params:
+    - n: number of bridge nodes to return (default 20)
+    - min_jobs: minimum number of distinct jobs an entity must appear in to
+      count as a cross-job bridge (default 2; set to 1 for structural bridges)
+    """
+    try:
+        from core_tools.kg_tool import query_top_bridges
+        return {"bridges": query_top_bridges(n=n, min_jobs=min_jobs)}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e), "bridges": []}
 
 
 @router.get("/articles")

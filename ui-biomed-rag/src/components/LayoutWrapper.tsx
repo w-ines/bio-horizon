@@ -5,10 +5,11 @@ import Sidebar from "./Sidebar";
 
 export default function LayoutWrapper({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isHomePage = pathname === "/";
+  const noSidebarRoutes = ["/", "/jobs"];
+  const hasSidebar = !noSidebarRoutes.includes(pathname ?? "");
 
-  if (isHomePage) {
-    // Dashboard only - no sidebar
+  if (!hasSidebar) {
+    // Dashboard and pages with own sidebar
     return <>{children}</>;
   }
 

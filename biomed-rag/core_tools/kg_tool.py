@@ -290,6 +290,36 @@ def query_node(node_id: str) -> Dict[str, Any]:
     }
 
 
+# ─────────────────────────────────────────────
+# Bridge scores (cached on graph size signature)
+# ─────────────────────────────────────────────
+
+_bridge_cache: Dict[str, Any] = {"signature": None, "scores": {}}
+
+
+def _graph_signature() -> tuple:
+    """Cheap signature that changes whenever the graph is mutated."""
+    return (_graph.number_of_nodes(), _graph.number_of_edges())
+
+
+def get_bridge_scores() -> Dict[str, Dict[str, Any]]:
+    """Return per-node bridge scores, recomputing only when the graph changes.
+
+    Bridge scoring (betweenness centrality) is relatively expensive, so the
+    result is cached against the graph's (node_count, edge_count) signature.
+    """
+    sig = _graph_signature()
+    if _bridge_cache["signature"] != sig:
+        _bridge_cache["scores"] = query.compute_bridge_scores(_graph)
+        _bridge_cache["signature"] = sig
+    return _bridge_cache["scores"]
+
+
+def query_top_bridges(n: int = 20, min_jobs: int = 2) -> List[Dict[str, Any]]:
+    """Return the top-n cross-job bridge entities, sorted by bridge score."""
+    return query.top_bridge_nodes(_graph, n=n, min_jobs=min_jobs)
+
+
 def query_top_nodes(n: int = 10, sort_by: str = "frequency") -> List[Dict[str, Any]]:
     return query.top_nodes(_graph, n=n, sort_by=sort_by)
 

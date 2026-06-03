@@ -69,6 +69,8 @@ def persist_graph(G: nx.Graph) -> int:
                 "sources": n.sources or [],
                 "job_ids": n.job_ids or [],
                 "confidence_max": n.confidence_max,
+                "concept_id": n.concept_id,
+                "concept_source": n.concept_source,
                 "metadata": n.metadata or {},
             }
             for n in snap.nodes
@@ -143,6 +145,8 @@ def load_graph() -> nx.Graph:
             sources=r.get("sources") or [],
             job_ids=r.get("job_ids") or [],
             confidence_max=r.get("confidence_max"),
+            concept_id=r.get("concept_id"),
+            concept_source=r.get("concept_source"),
             metadata=r.get("metadata") or {},
         )
 

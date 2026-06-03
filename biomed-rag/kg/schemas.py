@@ -15,6 +15,8 @@ class KgNode:
     sources: List[str] = field(default_factory=list)
     job_ids: List[str] = field(default_factory=list)
     confidence_max: Optional[float] = None
+    concept_id: Optional[str] = None  # Canonical id, e.g. "MESH:D009369" (None = unresolved)
+    concept_source: Optional[str] = None  # Vocabulary, e.g. "MeSH", "NCBIGene"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -26,6 +28,8 @@ class KgNode:
             "sources": self.sources,
             "job_ids": self.job_ids,
             "confidence_max": self.confidence_max,
+            "concept_id": self.concept_id,
+            "concept_source": self.concept_source,
             "metadata": self.metadata,
         }
 

@@ -21,6 +21,8 @@ def _node_to_payload(node: KgNode) -> Dict[str, Any]:
         "sources": node.sources or [],
         "job_ids": node.job_ids or [],
         "confidence_max": node.confidence_max,
+        "concept_id": node.concept_id,
+        "concept_source": node.concept_source,
         "metadata": node.metadata or {},
     }
 

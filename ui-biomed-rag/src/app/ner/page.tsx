@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo, useCallback, useRef } from "react";
+import { useNerStore } from "@/stores/nerStore";
 import dynamic from "next/dynamic";
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), { ssr: false });
@@ -87,21 +88,21 @@ interface NerResult {
 }
 
 export default function NerPage() {
-  const [text, setText] = useState("");
-  const [selectedTypes, setSelectedTypes] = useState<string[]>(
-    ENTITY_TYPE_OPTIONS.map((e) => e.value)
-  );
-  const [customLabels, setCustomLabels] = useState("");  // F2b: Custom zero-shot labels
-  const [enableAssertion, setEnableAssertion] = useState(false);  // F2c: Assertion status
+  const {
+    text, setText,
+    selectedTypes, setSelectedTypes,
+    customLabels, setCustomLabels,
+    enableAssertion, setEnableAssertion,
+    provider, setProvider,
+    result, setResult,
+    fileName, setFileName,
+    fileError, setFileError,
+    progress, setProgress,
+    viewMode, setViewMode,
+    showAllRelations, setShowAllRelations,
+  } = useNerStore();
   const [enableRelations] = useState(true);  // F2d: Relation extraction (always enabled)
-  const [provider, setProvider] = useState("gliner");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<NerResult | null>(null);
-  const [fileName, setFileName] = useState<string | null>(null);
-  const [fileError, setFileError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
-  const [viewMode, setViewMode] = useState<"entities" | "relgraph">("entities");
-  const [showAllRelations, setShowAllRelations] = useState(false);
   const relGraphRef = useRef<any>(null);
 
   const toggleType = (val: string) =>
@@ -718,7 +719,7 @@ export default function NerPage() {
                     </div>
                     {result.relations.length > 10 && (
                       <button
-                        onClick={() => setShowAllRelations((v) => !v)}
+                        onClick={() => setShowAllRelations(!showAllRelations)}
                         style={{
                           marginTop: "0.625rem",
                           width: "100%",

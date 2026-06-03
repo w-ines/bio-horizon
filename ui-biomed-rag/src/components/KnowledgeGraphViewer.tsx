@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
+import { forceCollide } from "d3-force-3d";
 
 const ForceGraph2D = dynamic(() => import("react-force-graph-2d"), {
   ssr: false,
@@ -36,6 +37,10 @@ interface Node {
   sources?: string[];
   source_count?: number;
   job_ids?: string[];
+  bridge_score?: number;
+  job_count?: number;
+  neighbor_job_count?: number;
+  betweenness?: number;
 }
 
 interface Link {
@@ -102,25 +107,93 @@ export function KnowledgeGraphViewer() {
     entityType: "",
     maxNodes: 100,
     minFrequency: 1,
+    prioritizeBridges: false,
+    minBridgeScore: 0,
   });
+  // Visually emphasise bridge nodes (ring + highlight) without changing data.
+  const [highlightBridges, setHighlightBridges] = useState(true);
 
   const fgRef = useRef<any>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
 
-  // Fetch available jobs on mount
+  // Track container size so the graph canvas fills it exactly.
+  // Re-runs when the loading state flips so the observer attaches once the
+  // graph container actually mounts (it isn't rendered during loading).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        setDimensions({ width: rect.width, height: rect.height });
+      }
+    };
+
+    // Measure now, on the next frame, and shortly after (covers async layout).
+    measure();
+    const raf = requestAnimationFrame(measure);
+    const t = setTimeout(measure, 150);
+
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(t);
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [loading, graphData.nodes.length]);
+
+  // Tune the force simulation so nodes spread out and stop overlapping.
+  useEffect(() => {
+    let tries = 0;
+    const apply = () => {
+      const fg = fgRef.current;
+      if (!fg) {
+        if (tries++ < 20) setTimeout(apply, 100);
+        return;
+      }
+      fg.d3Force("charge")?.strength(-450).distanceMax(800);
+      fg.d3Force("link")?.distance(110).strength(0.3);
+      fg.d3Force(
+        "collide",
+        forceCollide((node: any) => getNodeSize(node) + 6).strength(1).iterations(2)
+      );
+      fg.d3ReheatSimulation?.();
+    };
+    apply();
+  }, [loading, graphData.nodes.length]);
+
+  // Fetch available jobs on mount, then poll every 10s while any job is running
   useEffect(() => {
     async function fetchJobs() {
       try {
         const res = await fetch("http://localhost:8000/jobs");
         const data = await res.json();
-        const completedJobs = (data.jobs || data || []).filter(
+        const relevantJobs = (data.jobs || data || []).filter(
           (j: Job) => j.status === "completed" || j.status === "running"
         );
-        setJobs(completedJobs);
+        setJobs(relevantJobs);
+        return relevantJobs;
       } catch {
         setJobs([]);
+        return [];
       }
     }
+
     fetchJobs();
+    const interval = setInterval(async () => {
+      const updated = await fetchJobs();
+      if (updated.every((j: Job) => j.status !== "running")) {
+        clearInterval(interval);
+      }
+    }, 10_000);
+
+    return () => clearInterval(interval);
   }, []);
 
   const toggleJobId = (jobId: string) => {
@@ -163,6 +236,9 @@ export function KnowledgeGraphViewer() {
       if (filters.entityType) params.append("entity_type", filters.entityType);
       params.append("max_nodes", filters.maxNodes.toString());
       params.append("min_frequency", filters.minFrequency.toString());
+      if (filters.prioritizeBridges) params.append("sort_by", "bridge");
+      if (filters.minBridgeScore > 0)
+        params.append("min_bridge_score", filters.minBridgeScore.toString());
       if (selectedJobIds.size > 0) {
         params.append("job_ids", Array.from(selectedJobIds).join(","));
       }
@@ -209,6 +285,12 @@ export function KnowledgeGraphViewer() {
     return ENTITY_COLORS[node.type] || ENTITY_COLORS.UNKNOWN;
   };
 
+  // Bridge nodes connect multiple jobs. We use the bridge score to decide
+  // whether to draw a highlight ring (gold) around the node.
+  const BRIDGE_RING_COLOR = "#d97706";
+  const isBridgeNode = (node: Node) =>
+    (node.bridge_score ?? 0) >= 0.25 && (node.job_count ?? 0) >= 2;
+
   const getNodeSize = (node: Node) => {
     // Screen-pixel radius (frequency-based). Used for both physics and canvas.
     return Math.min(48, Math.max(22, 22 + (node.frequency || 1) * 2));
@@ -225,7 +307,8 @@ export function KnowledgeGraphViewer() {
     for (const link of graphData.links) {
       const src = typeof link.source === "object" ? (link.source as any).id : link.source;
       const tgt = typeof link.target === "object" ? (link.target as any).id : link.target;
-      const key = [src, tgt].sort().join("|||");
+      // Keep direction-aware key (do NOT sort) so source -> target meaning is preserved.
+      const key = `${src}|||${tgt}`;
       if (linkMap.has(key)) {
         const existing = linkMap.get(key)!;
         const types: string[] = existing._relationTypes;
@@ -410,24 +493,30 @@ export function KnowledgeGraphViewer() {
           </select>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
           <label style={{ fontSize: "0.875rem", fontWeight: "600", color: "var(--medical-gray-700)" }}>Max Nodes:</label>
           <input
-            type="number"
+            type="range"
             value={filters.maxNodes}
-            onChange={(e) => setFilters({ ...filters, maxNodes: parseInt(e.target.value) || 100 })}
-            style={{
-              border: "2px solid var(--medical-gray-200)",
-              borderRadius: "6px",
-              padding: "0.375rem 0.75rem",
-              fontSize: "0.875rem",
-              width: "5rem",
-              background: "white",
-              color: "var(--foreground)"
-            }}
+            onChange={(e) => setFilters({ ...filters, maxNodes: parseInt(e.target.value) })}
             min="10"
             max="500"
+            step="10"
+            style={{
+              width: "10rem",
+              accentColor: "var(--medical-primary)",
+              cursor: "pointer",
+            }}
           />
+          <span style={{
+            fontSize: "0.875rem",
+            fontWeight: "700",
+            color: "var(--medical-primary)",
+            minWidth: "2.5rem",
+            textAlign: "right",
+          }}>
+            {filters.maxNodes}
+          </span>
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -450,6 +539,44 @@ export function KnowledgeGraphViewer() {
           />
         </div>
 
+        {/* Bridge controls — surface cross-job bridge entities */}
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem", paddingLeft: "1rem", borderLeft: "1px solid var(--medical-gray-200)" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.8125rem", fontWeight: "600", color: "var(--medical-gray-700)", cursor: "pointer" }}>
+            <span style={{ width: "10px", height: "10px", borderRadius: "50%", border: "2px solid #d97706", flexShrink: 0 }}></span>
+            <input
+              type="checkbox"
+              checked={highlightBridges}
+              onChange={(e) => setHighlightBridges(e.target.checked)}
+              style={{ accentColor: "#d97706", cursor: "pointer" }}
+            />
+            Highlight bridges
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.8125rem", fontWeight: "600", color: "var(--medical-gray-700)", cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={filters.prioritizeBridges}
+              onChange={(e) => setFilters({ ...filters, prioritizeBridges: e.target.checked })}
+              style={{ accentColor: "#d97706", cursor: "pointer" }}
+            />
+            Prioritize bridges
+          </label>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+            <label style={{ fontSize: "0.8125rem", fontWeight: "600", color: "var(--medical-gray-700)" }}>Min bridge:</label>
+            <input
+              type="range"
+              value={filters.minBridgeScore}
+              onChange={(e) => setFilters({ ...filters, minBridgeScore: parseFloat(e.target.value) })}
+              min="0"
+              max="1"
+              step="0.05"
+              style={{ width: "6rem", accentColor: "#d97706", cursor: "pointer" }}
+            />
+            <span style={{ fontSize: "0.8125rem", fontWeight: "700", color: "#d97706", minWidth: "2.2rem", textAlign: "right" }}>
+              {filters.minBridgeScore.toFixed(2)}
+            </span>
+          </div>
+        </div>
+
         <button
           onClick={fetchGraphData}
           className="medical-button-primary"
@@ -467,50 +594,44 @@ export function KnowledgeGraphViewer() {
           borderRight: "none",
           borderTop: "none",
           borderBottom: "1px solid var(--medical-gray-200)",
-          padding: "0.75rem 2rem",
+          padding: "0.6rem 2rem",
           display: "flex",
           gap: "1rem",
           alignItems: "center",
-          flexWrap: "wrap",
           fontSize: "0.8125rem"
         }}>
-          <span style={{ fontWeight: "600", color: "var(--medical-gray-700)", whiteSpace: "nowrap" }}>Filter by Job:</span>
-          {jobs.map((job) => (
-            <label
-              key={job.job_id}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "0.375rem",
-                cursor: "pointer",
-                padding: "0.25rem 0.625rem",
-                borderRadius: "6px",
-                border: selectedJobIds.has(job.job_id)
-                  ? "2px solid var(--medical-primary)"
-                  : "2px solid var(--medical-gray-200)",
-                background: selectedJobIds.has(job.job_id)
-                  ? "rgba(0, 102, 204, 0.05)"
-                  : "white",
-                transition: "all 0.15s ease",
-              }}
-            >
-              <input
-                type="checkbox"
-                checked={selectedJobIds.has(job.job_id)}
-                onChange={() => toggleJobId(job.job_id)}
-                style={{ accentColor: "var(--medical-primary)" }}
-              />
-              <span style={{ fontWeight: "500", color: "var(--medical-gray-800)" }}>
-                {job.query}
-              </span>
-              <span style={{ color: "var(--medical-gray-500)", fontSize: "0.6875rem" }}>
-                ({job.entities_extracted} ent.)
-              </span>
-              {job.status === "running" && (
-                <span style={{ color: "#f59e0b", fontSize: "0.6875rem", fontWeight: "600" }}>Running</span>
-              )}
-            </label>
-          ))}
+          <label style={{ fontWeight: "600", color: "var(--medical-gray-700)", whiteSpace: "nowrap" }}>
+            Filter by Job:
+          </label>
+          <select
+            multiple
+            value={Array.from(selectedJobIds)}
+            onChange={(e) => {
+              const selected = new Set(
+                Array.from(e.target.selectedOptions).map((o) => o.value)
+              );
+              setSelectedJobIds(selected);
+            }}
+            style={{
+              border: "2px solid var(--medical-gray-200)",
+              borderRadius: "6px",
+              padding: "0.25rem 0.5rem",
+              fontSize: "0.8125rem",
+              background: "white",
+              color: "var(--foreground)",
+              minWidth: "16rem",
+              maxWidth: "32rem",
+              cursor: "pointer",
+              accentColor: "var(--medical-primary)",
+            }}
+            size={Math.min(jobs.length, 4)}
+          >
+            {jobs.map((job) => (
+              <option key={job.job_id} value={job.job_id}>
+                {job.query} ({job.entities_extracted} ent.){job.status === "running" ? " — Running" : ""}
+              </option>
+            ))}
+          </select>
           {selectedJobIds.size > 0 && (
             <button
               onClick={() => setSelectedJobIds(new Set())}
@@ -522,11 +643,15 @@ export function KnowledgeGraphViewer() {
                 fontSize: "0.75rem",
                 color: "var(--medical-gray-600)",
                 cursor: "pointer",
+                whiteSpace: "nowrap",
               }}
             >
               Clear filter
             </button>
           )}
+          <span style={{ fontSize: "0.7rem", color: "var(--medical-gray-400)" }}>
+            (Ctrl+clic pour sélection multiple)
+          </span>
         </div>
       )}
 
@@ -588,8 +713,12 @@ export function KnowledgeGraphViewer() {
         )}
       </div>
 
-      {/* Graph Container */}
-      <div className="flex-1 relative">
+      {/* Graph Container — fills the full white area; the detail panel floats on top */}
+      <div
+        ref={containerRef}
+        className="flex-1 relative"
+        style={{ minHeight: 0 }}
+      >
         {!graphData || !graphData.nodes || graphData.nodes.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <div className="medical-card" style={{ padding: "2rem", textAlign: "center", maxWidth: "28rem" }}>
@@ -619,11 +748,20 @@ export function KnowledgeGraphViewer() {
           <ForceGraph2D
             ref={fgRef}
             graphData={mergedGraphData}
+            width={dimensions.width}
+            height={dimensions.height}
+            onNodeDragEnd={(node: any) => {
+              node.fx = node.x;
+              node.fy = node.y;
+            }}
             nodeLabel={(node: any) => `${node.label} (${node.type})\nFrequency: ${node.frequency}`}
             nodeColor={(node: any) => getNodeColor(node)}
             nodeVal={(node: any) => (getNodeSize(node) / 4) ** 2}
             linkWidth={(link: any) => getLinkWidth(link)}
             linkColor={(link: any) => getLinkColor(link)}
+            linkDirectionalArrowLength={6}
+            linkDirectionalArrowRelPos={1}
+            linkDirectionalArrowColor={(link: any) => getLinkColor(link)}
             linkDirectionalParticles={2}
             linkDirectionalParticleWidth={2}
             linkDirectionalParticleColor={(link: any) => getLinkColor(link)}
@@ -662,6 +800,16 @@ export function KnowledgeGraphViewer() {
               ctx.strokeStyle = "rgba(255,255,255,0.55)";
               ctx.lineWidth = 0.8 / globalScale;
               ctx.stroke();
+
+              // Gold ring for cross-job bridge nodes (width scales with score).
+              if (highlightBridges && isBridgeNode(node)) {
+                const ringWidth = (1.5 + (node.bridge_score || 0) * 3) / globalScale;
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, radius + ringWidth, 0, 2 * Math.PI, false);
+                ctx.strokeStyle = BRIDGE_RING_COLOR;
+                ctx.lineWidth = ringWidth;
+                ctx.stroke();
+              }
 
               ctx.textAlign = "center";
               ctx.textBaseline = "middle";
@@ -732,8 +880,40 @@ export function KnowledgeGraphViewer() {
                 Links: <strong style={{ color: "var(--medical-gray-900)" }}>{selectedNode.degree}</strong>
               </span>
             </div>
+
+            {/* Bridge score — how strongly this entity bridges ingestion jobs */}
+            <div style={{ marginTop: "0.75rem", padding: "0.6rem 0.75rem", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: "8px" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "0.4rem" }}>
+                <span style={{ display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.8125rem", fontWeight: "600", color: "#92400e" }}>
+                  <span style={{ width: "10px", height: "10px", borderRadius: "50%", border: "2px solid #d97706" }}></span>
+                  Bridge score
+                </span>
+                <strong style={{ fontSize: "0.95rem", color: "#b45309" }}>
+                  {(selectedNode.bridge_score ?? 0).toFixed(3)}
+                </strong>
+              </div>
+              <div style={{ height: "6px", background: "#fde68a", borderRadius: "999px", overflow: "hidden", marginBottom: "0.45rem" }}>
+                <div style={{ width: `${Math.min(100, (selectedNode.bridge_score ?? 0) * 100)}%`, height: "100%", background: "#d97706" }}></div>
+              </div>
+              <div style={{ display: "flex", gap: "0.9rem", flexWrap: "wrap", fontSize: "0.7rem", color: "#92400e" }}>
+                <span>Jobs: <strong>{selectedNode.job_count ?? (selectedNode.job_ids?.length ?? 0)}</strong></span>
+                <span>Neighbor jobs: <strong>{selectedNode.neighbor_job_count ?? 0}</strong></span>
+                <span>Betweenness: <strong>{(selectedNode.betweenness ?? 0).toFixed(4)}</strong></span>
+              </div>
+              {(selectedNode.job_count ?? 0) >= 2 ? (
+                <p style={{ margin: "0.45rem 0 0 0", fontSize: "0.7rem", color: "#a16207", lineHeight: 1.35 }}>
+                  Transversal entity — shared across {selectedNode.job_count} jobs. Use it to corroborate findings and bridge corpora.
+                </p>
+              ) : (
+                <p style={{ margin: "0.45rem 0 0 0", fontSize: "0.7rem", color: "#a16207", lineHeight: 1.35 }}>
+                  Appears in a single job — not a cross-job bridge.
+                </p>
+              )}
+            </div>
           </div>
 
+          {/* Scrollable body */}
+          <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
           {/* Relations */}
           {selectedNodeRelations.length > 0 && (
             <div style={{ padding: "0.75rem 1.5rem", borderBottom: "1px solid var(--medical-gray-200)", flexShrink: 0 }}>
@@ -785,7 +965,7 @@ export function KnowledgeGraphViewer() {
             </h4>
           </div>
 
-          <div style={{ flex: 1, overflowY: "auto", padding: "0 1.5rem 1.5rem" }}>
+          <div style={{ padding: "0 1.5rem 1.5rem" }}>
             {articlesLoading ? (
               <p style={{ fontSize: "0.8125rem", color: "var(--medical-gray-500)", padding: "1rem 0" }}>Loading articles...</p>
             ) : selectedArticles.length === 0 ? (
@@ -891,6 +1071,7 @@ export function KnowledgeGraphViewer() {
                 ))}
               </div>
             )}
+          </div>
           </div>
         </div>
       )}

@@ -368,6 +368,9 @@ def save_job_snapshot(
                 sources=data.get("sources", []),
                 job_ids=data.get("job_ids", []),
                 confidence_max=data.get("confidence_max"),
+                concept_id=data.get("concept_id"),
+                concept_source=data.get("concept_source"),
+                metadata=data.get("metadata", {}),
             ))
     
     job_edges = []

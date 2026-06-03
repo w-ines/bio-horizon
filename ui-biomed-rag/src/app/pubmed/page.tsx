@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePubMedStore } from "@/stores/pubmedStore";
 
 const PUBLICATION_TYPES = [
   "Clinical Trial",
@@ -32,17 +33,19 @@ interface SearchResult {
 }
 
 export default function PubMedPage() {
-  const [query, setQuery] = useState("");
-  const [maxResults, setMaxResults] = useState(10);
-  const [mindate, setMindate] = useState("");
-  const [maxdate, setMaxdate] = useState("");
-  const [selectedPubTypes, setSelectedPubTypes] = useState<string[]>([]);
-  const [journalsInput, setJournalsInput] = useState("");
-  const [language, setLanguage] = useState("");
-  const [selectedSpecies, setSelectedSpecies] = useState<string[]>([]);
+  const {
+    query, setQuery,
+    maxResults, setMaxResults,
+    mindate, setMindate,
+    maxdate, setMaxdate,
+    selectedPubTypes, setSelectedPubTypes,
+    journalsInput, setJournalsInput,
+    language, setLanguage,
+    selectedSpecies, setSelectedSpecies,
+    result, setResult,
+    expandedPmid, setExpandedPmid,
+  } = usePubMedStore();
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<SearchResult | null>(null);
-  const [expandedPmid, setExpandedPmid] = useState<string | null>(null);
 
   const togglePubType = (pt: string) =>
     setSelectedPubTypes((prev) =>

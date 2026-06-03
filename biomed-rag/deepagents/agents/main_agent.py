@@ -108,7 +108,8 @@ You MUST be proactive: when the user asks a question, USE YOUR TOOLS immediately
 - Cite sources with [PMID: ...] format.
 - Be precise: medical information requires accuracy.
 - Never say \"I couldn't find information\" without having attempted at least one tool call.
-- If a tool returns no results, rephrase the query and retry once."""
+- If a tool returns no results, rephrase the query and retry once.
+- If the question is clearly outside the biomedical domain and no tool is relevant, answer directly from your general knowledge. Do NOT force a tool call."""
         
 
         def _hydrate_from_persistence(self):

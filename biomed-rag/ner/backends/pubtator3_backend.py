@@ -74,6 +74,81 @@ TYPE_MAP: Dict[str, str] = {
 # Default entity types to keep (subset most useful for KG)
 DEFAULT_TYPES = {"GENE", "DISEASE", "DRUG", "MUTATION"}
 
+# Bio-Horizon entity type → default canonical vocabulary used by PubTator3
+# when the raw identifier carries no explicit prefix.
+_DEFAULT_VOCAB_BY_TYPE: Dict[str, str] = {
+    "GENE": "NCBIGene",
+    "DISEASE": "MeSH",
+    "DRUG": "MeSH",
+    "SPECIES": "NCBITaxon",
+    "CELLLINE": "Cellosaurus",
+}
+
+# Map a raw identifier prefix → (canonical CURIE prefix, human-readable source)
+_PREFIX_NORMALISE: Dict[str, tuple] = {
+    "MESH": ("MESH", "MeSH"),
+    "OMIM": ("OMIM", "OMIM"),
+    "GENE": ("NCBIGene", "NCBIGene"),
+    "NCBIGENE": ("NCBIGene", "NCBIGene"),
+    "ENTREZ": ("NCBIGene", "NCBIGene"),
+    "SPECIES": ("NCBITaxon", "NCBITaxon"),
+    "TAXON": ("NCBITaxon", "NCBITaxon"),
+    "NCBITAXON": ("NCBITaxon", "NCBITaxon"),
+    "CVCL": ("Cellosaurus", "Cellosaurus"),
+    "CELLOSAURUS": ("Cellosaurus", "Cellosaurus"),
+    "RS": ("dbSNP", "dbSNP"),
+    "DBSNP": ("dbSNP", "dbSNP"),
+    "TMVAR": ("tmVar", "tmVar"),
+    "CHEBI": ("CHEBI", "ChEBI"),
+}
+
+
+def _normalise_concept_id(raw: str, mapped_type: str) -> Optional[tuple]:
+    """Turn a raw PubTator3 identifier into a canonical (concept_id, source) pair.
+
+    PubTator3 identifiers come in several shapes depending on entity type:
+      - Disease/Chemical: "MESH:D009369"  (already prefixed)
+      - Gene:             "673"           (bare NCBI Gene id)
+      - Species:          "9606"          (bare NCBI Taxonomy id)
+      - Mutation:         "rs334" / "tmVar:c.123A>G"
+    Some entities have multiple ids separated by ';' or ',' — we keep the first.
+
+    Returns:
+        (canonical_concept_id, source) e.g. ("MESH:D009369", "MeSH"),
+        or None when no usable identifier is present.
+    """
+    if not raw:
+        return None
+    raw = raw.strip()
+    if not raw or raw.lower() in {"none", "-", "null"}:
+        return None
+
+    # Multiple concepts collapsed into one annotation — keep the first.
+    for sep in (";", ",", "|"):
+        if sep in raw:
+            raw = raw.split(sep)[0].strip()
+
+    # Already a prefixed CURIE: "PREFIX:LOCAL"
+    if ":" in raw:
+        prefix, local = raw.split(":", 1)
+        prefix_u = prefix.strip().upper()
+        local = local.strip()
+        if not local:
+            return None
+        norm_prefix, source = _PREFIX_NORMALISE.get(prefix_u, (prefix.strip(), prefix.strip()))
+        return f"{norm_prefix}:{local}", source
+
+    # Bare identifier — infer vocabulary from entity type.
+    # dbSNP rs-numbers sometimes arrive without a prefix.
+    if raw.lower().startswith("rs") and raw[2:].isdigit():
+        return f"dbSNP:{raw}", "dbSNP"
+
+    vocab = _DEFAULT_VOCAB_BY_TYPE.get(mapped_type)
+    if not vocab:
+        return None
+    prefix = "MESH" if vocab == "MeSH" else vocab
+    return f"{prefix}:{raw}", vocab
+
 
 def _get_timeout() -> int:
     return int(os.getenv("PUBTATOR3_TIMEOUT", "30"))
@@ -208,6 +283,13 @@ def _parse_bioc_document(
             length = locations[0].get("length") if locations else None
             end = (start + length) if (start is not None and length is not None) else None
 
+            # Entity resolution: map to a canonical concept id (MeSH / NCBIGene / …)
+            concept_id = None
+            concept_source = None
+            resolved = _normalise_concept_id(identifier, mapped)
+            if resolved:
+                concept_id, concept_source = resolved
+
             entities_by_type[mapped].append(
                 NerEntity(
                     text=text,
@@ -216,6 +298,8 @@ def _parse_bioc_document(
                     end=end,
                     label=mapped,
                     assertion_status=None,
+                    concept_id=concept_id,
+                    concept_source=concept_source,
                 )
             )
 
