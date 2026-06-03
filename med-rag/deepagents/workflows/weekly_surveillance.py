@@ -1,1 +1,0 @@
-# Pipeline hebdo automatisé

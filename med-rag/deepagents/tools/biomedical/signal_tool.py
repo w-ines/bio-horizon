@@ -1,1 +1,0 @@
- # Wrapper signaux pour l'agent
